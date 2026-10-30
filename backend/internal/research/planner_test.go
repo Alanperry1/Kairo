@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,9 @@ func TestOllamaPlannerAndSingleRepair(t *testing.T) {
 		}
 		text := `{"adapter":"shell.execute"}`
 		if calls.Add(1) > 1 {
+			if !strings.Contains(req["prompt"].(string), "Previous model response") || !strings.Contains(req["prompt"].(string), "shell.execute") {
+				t.Error("repair did not include the failed response")
+			}
 			b, _ := json.Marshal(p)
 			text = string(b)
 		}
@@ -137,4 +141,91 @@ func TestExplanationFailurePreservesEvidence(t *testing.T) {
 	if e.Status != "completed" || e.Result.NarrativeSource != "deterministic" || len(e.Result.Warnings) == 0 {
 		t.Fatalf("evidence not preserved: %+v", e)
 	}
+}
+
+func TestGoogleGemmaProvider(t *testing.T) {
+	for _, jsonMode := range []bool{true, false} {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "POST" || r.URL.Path != "/v1beta/models/gemma-4-26b-a4b-it:generateContent" || r.Header.Get("x-goog-api-key") != "test-private-key" || r.Header.Get("Authorization") != "" || r.URL.RawQuery != "" {
+				t.Error("wrong native Google request or credential transport")
+			}
+			var body struct {
+				SystemInstruction struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"systemInstruction"`
+				Contents []struct {
+					Role  string `json:"role"`
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"contents"`
+				GenerationConfig map[string]any `json:"generationConfig"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+				return
+			}
+			if body.SystemInstruction.Parts[0].Text != "Return JSON" || body.Contents[0].Parts[0].Text != "my question" || body.Contents[0].Role != "user" {
+				t.Error("lost system instruction or question")
+			}
+			if jsonMode && body.GenerationConfig["responseMimeType"] != "application/json" {
+				t.Error("JSON output was not requested")
+			}
+			if !jsonMode && body.GenerationConfig["responseMimeType"] != nil {
+				t.Error("JSON mode forced on narrative")
+			}
+			if body.GenerationConfig["thinkingConfig"].(map[string]any)["thinkingLevel"] != "minimal" {
+				t.Error("Gemma thinking was not disabled")
+			}
+			respond(w, 200, map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]any{"text": "Reasoning that must not enter the research plan", "thought": true}, map[string]any{"text": `{"ok":true}`}}}}}})
+		}))
+		model := NewModelClient("google", upstream.URL+"/v1beta", "gemma-4-26b-a4b-it", "test-private-key")
+		text, err := model.Generate(context.Background(), "Return JSON", "my question", jsonMode)
+		upstream.Close()
+		if err != nil || text != `{"ok":true}` {
+			t.Fatalf("final text was not isolated: %q %v", text, err)
+		}
+	}
+}
+
+func TestGoogleRejectsBlockedIncompleteAndThinkingOnlyAnswers(t *testing.T) {
+	for _, response := range []string{
+		`{"promptFeedback":{"blockReason":"SAFETY"}}`,
+		`{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"partial"}]}}]}`,
+		`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"thought":true,"text":"reasoning only"}]}}]}`,
+	} {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(response))
+		}))
+		_, err := NewModelClient("google", upstream.URL, "gemma-4-26b-a4b-it", "test-key").Generate(context.Background(), "system", "question", true)
+		upstream.Close()
+		if err == nil {
+			t.Fatal("non-final model output was accepted")
+		}
+	}
+}
+
+// Opt-in smoke test: this sends one small request to the configured Google API.
+func TestLiveGoogleGemmaConnection(t *testing.T) {
+	if os.Getenv("KAIRO_TEST_LIVE_MODEL") != "1" {
+		t.Skip("set KAIRO_TEST_LIVE_MODEL=1 to test configured Google credentials")
+	}
+	if os.Getenv("MODEL_PROVIDER") != "google" {
+		t.Skip("this smoke test requires MODEL_PROVIDER=google")
+	}
+	m := NewModelClient("google", os.Getenv("MODEL_URL"), os.Getenv("MODEL_NAME"), os.Getenv("MODEL_API_KEY"))
+	text, err := m.Generate(context.Background(), "Return exactly one JSON object without Markdown.", `Return {"ok":true}.`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err = json.Unmarshal([]byte(text), &result); err != nil || !result.OK {
+		t.Fatal("Google did not return the expected JSON object")
+	}
+	t.Log("Google Gemma authentication, native generation, and JSON output verified")
 }

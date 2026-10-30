@@ -10,7 +10,10 @@ try {
   let agentId = process.env.ELEVENLABS_AGENT_ID;
   if (agentId) {
     await client.conversationalAi.agents.get(agentId);
-    console.log('Using the existing configured ElevenLabs agent.');
+    if (process.argv.includes('--update')) {
+      await client.conversationalAi.agents.update(agentId, { conversationConfig: { agent: { prompt: voiceAgentConfig.conversationConfig.agent.prompt } } });
+      console.log('Updated Kairo research instructions and client tools.');
+    } else console.log('Using the existing configured ElevenLabs agent.');
   } else {
     const agent = await client.conversationalAi.agents.create(voiceAgentConfig);
     agentId = agent.agentId;

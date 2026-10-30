@@ -1,0 +1,9 @@
+{
+  "javascript": {"extension":"js", "run":["node","{source}"], "version":["node","--version"], "modules":["assert","buffer","crypto","events","fs","os","path","perf_hooks","stream","util"]},
+  "r": {"extension":"R", "run":["Rscript","--vanilla","{source}"], "version":["Rscript","--version"], "modules":["base","stats","utils","graphics","grDevices","methods","datasets","jsonlite","data.table","ggplot2","MASS","Matrix"]},
+  "go": {"extension":"go", "build":["go","build","-o","{binary}","{source}"], "run":["{binary}"], "version":["go","version"], "modules":["encoding/json","math","math/rand","sort","slices","fmt","os","time"]},
+  "cpp": {"extension":"cpp", "build":["g++","-std=c++17","-O2","-I/usr/include","-o","{binary}","{source}"], "run":["{binary}"], "version":["g++","--version"], "modules":["algorithm","cmath","iostream","numeric","random","vector","nlohmann/json.hpp"]},
+  "julia": {"extension":"jl", "run":["julia","--startup-file=no","{source}"], "version":["julia","--version"], "modules":[]},
+  "rust": {"extension":"rs", "build":["rustc","-O","-o","{binary}","{source}"], "run":["{binary}"], "version":["rustc","--version"], "modules":["std"]},
+  "ruby": {"extension":"rb", "run":["ruby","{source}"], "version":["ruby","--version"], "modules":["json","csv","matrix"]}
+}

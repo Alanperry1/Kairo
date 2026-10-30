@@ -32,7 +32,7 @@ func testServer(t *testing.T) (*Server, http.Handler) {
 	reg := NewRegistry("python3", "local", true)
 	model := NewModelClient("disabled", "", "", "")
 	jobs := NewJobs(store, reg, PythonExecutor{Python: "python3", Mode: "local"}, model, root, "local", "", 1)
-	s := &Server{cfg, store, reg, model, jobs}
+	s := &Server{Config: cfg, Store: store, Registry: reg, Model: model, Jobs: jobs}
 	t.Cleanup(jobs.Close)
 	return s, s.Handler()
 }
@@ -103,6 +103,11 @@ func waitState(t *testing.T, s *Store, id string, statuses ...string) Experiment
 		time.Sleep(10 * time.Millisecond)
 	}
 	e, _ := s.Get(id)
+	for _, status := range statuses {
+		if e.Status == status {
+			return e
+		}
+	}
 	t.Fatalf("timed out waiting for %v; got %s: %s", statuses, e.Status, e.Error)
 	return e
 }

@@ -242,7 +242,8 @@ func (s *Store) Events(id string, after int64, limit int) ([]Event, error) {
 	}
 	return out, rows.Err()
 }
-func (s *Store) Delete(id string) error {
+func (s *Store) Delete(id string) error { return s.DeleteWithCleanup(id, nil) }
+func (s *Store) DeleteWithCleanup(id string, cleanup func() error) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -256,6 +257,11 @@ func (s *Store) Delete(id string) error {
 	}
 	if status == "queued" || status == "running" || status == "planning" {
 		return ErrConflict
+	}
+	if cleanup != nil {
+		if err = cleanup(); err != nil {
+			return err
+		}
 	}
 	if _, err = tx.Exec("DELETE FROM experiments WHERE id=$1", id); err != nil {
 		return err

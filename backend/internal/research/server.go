@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +21,7 @@ import (
 )
 
 type Server struct {
+	Objects  ObjectStorage
 	Config   Config
 	Store    *Store
 	Registry *Registry
@@ -41,9 +41,10 @@ func (s *Server) Handler() http.Handler {
 			apiError(w, 503, "database_unavailable", "Database is unavailable")
 			return
 		}
-		respond(w, 200, map[string]any{"database": "ready", "worker_mode": s.Config.WorkerMode, "model_provider": s.Config.ModelProvider, "model_connectivity": "not_checked"})
+		respond(w, 200, map[string]any{"database": "ready", "worker_mode": s.Config.WorkerMode, "storage_backend": s.Config.StorageBackend, "model_provider": s.Config.ModelProvider, "model_connectivity": "not_checked"})
 	})
 	mux.HandleFunc("GET /api/v1/experiments", s.listExperiments)
+	mux.HandleFunc("POST /api/v1/assistant/chat", s.assistantChat)
 	mux.HandleFunc("POST /api/v1/experiments", s.createExperiment)
 	mux.HandleFunc("GET /api/v1/experiments/{id}", s.getExperiment)
 	mux.HandleFunc("PATCH /api/v1/experiments/{id}", s.updateExperiment)
@@ -59,6 +60,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/experiments/{id}/artifacts/{name...}", s.downloadArtifact)
 	mux.HandleFunc("GET /api/v1/experiments/{id}/bundle", s.bundle)
 	mux.HandleFunc("GET /api/v1/experiments/{id}/report", s.report)
+	mux.HandleFunc("GET /api/v1/languages", func(w http.ResponseWriter, r *http.Request) {
+		respond(w, 200, map[string]any{"data": s.Registry.Languages()})
+	})
 	mux.HandleFunc("GET /api/v1/tools", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]any{"data": s.Registry.Tools(), "execution_mode": s.Config.WorkerMode})
 	})
@@ -69,11 +73,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/datasets/{id}", s.getDataset)
 	mux.HandleFunc("GET /api/v1/datasets/{id}/download", s.downloadDataset)
 	mux.HandleFunc("GET /api/v1/reports", s.reports)
+	mux.HandleFunc("POST /api/v1/experiments/{id}/documents", s.generateDocument)
+	mux.HandleFunc("GET /api/v1/documents", s.listDocuments)
+	mux.HandleFunc("GET /api/v1/documents/{documentID}", s.getDocument)
+	mux.HandleFunc("GET /api/v1/documents/{documentID}/download", s.downloadDocument)
+	mux.HandleFunc("GET /api/v1/documents/{documentID}/bundle", s.documentBundle)
+	mux.HandleFunc("GET /api/v1/documents/{documentID}/figures/{name...}", s.documentFigure)
 	mux.HandleFunc("GET /api/v1/dashboard", s.dashboard)
 	mux.HandleFunc("GET /api/v1/activity", s.activity)
 	mux.HandleFunc("POST /api/v1/voice/session", s.voiceSession)
 	mux.HandleFunc("GET /api/v1/settings", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, 200, map[string]any{"model_provider": s.Config.ModelProvider, "model_name": s.Config.ModelName, "model_connectivity": "not_checked", "worker_mode": s.Config.WorkerMode, "workers": s.Config.Workers, "api_auth_enabled": s.Config.Token != "", "voice_enabled": s.Config.ElevenLabsAPIKey != "" && s.Config.ElevenLabsAgentID != "", "supported_adapters": s.Registry.Tools()})
+		respond(w, 200, map[string]any{"model_provider": s.Config.ModelProvider, "model_name": s.Config.ModelName, "model_connectivity": "not_checked", "worker_mode": s.Config.WorkerMode, "storage_backend": s.Config.StorageBackend, "workers": s.Config.Workers, "api_auth_enabled": s.Config.Token != "", "voice_enabled": s.Config.ElevenLabsAPIKey != "" && s.Config.ElevenLabsAgentID != "", "supported_adapters": s.Registry.Tools()})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { apiError(w, 404, "not_found", "API route not found") })
 	return s.middleware(mux)
@@ -86,6 +96,9 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					panic(recovered)
+				}
 				slog.Error("request panic", "error", recovered)
 				apiError(w, 500, "internal_error", "Internal server error")
 			}
@@ -204,12 +217,18 @@ func (s *Server) listExperiments(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) createExperiment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Language  string `json:"language"`
 		Title     string `json:"title"`
 		Question  string `json:"question"`
 		ProjectID string `json:"project_id"`
 		DatasetID string `json:"dataset_id"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	req.Language = normalizeLanguage(req.Language)
+	if !validLanguage(req.Language) {
+		apiError(w, 422, "invalid_language", "Language must be auto or a language name (up to 40 letters, numbers, +, #, or hyphens)")
 		return
 	}
 	req.Question = strings.TrimSpace(req.Question)
@@ -235,7 +254,7 @@ func (s *Server) createExperiment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	now := time.Now().UTC()
-	e := Experiment{ID: newID("exp"), Title: req.Title, Question: req.Question, ProjectID: req.ProjectID, DatasetID: req.DatasetID, Status: "draft", CreatedAt: now, UpdatedAt: now}
+	e := Experiment{Language: req.Language, ID: newID("exp"), Title: req.Title, Question: req.Question, ProjectID: req.ProjectID, DatasetID: req.DatasetID, Status: "draft", CreatedAt: now, UpdatedAt: now}
 	if err := s.Store.Create(e); err != nil {
 		handleError(w, err)
 		return
@@ -250,6 +269,7 @@ func (s *Server) getExperiment(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) updateExperiment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Language  *string `json:"language"`
 		Title     *string `json:"title"`
 		Question  *string `json:"question"`
 		ProjectID *string `json:"project_id"`
@@ -257,6 +277,14 @@ func (s *Server) updateExperiment(w http.ResponseWriter, r *http.Request) {
 	}
 	if !decode(w, r, &req) {
 		return
+	}
+	if req.Language != nil {
+		value := normalizeLanguage(*req.Language)
+		if !validLanguage(value) {
+			apiError(w, 422, "invalid_language", "Invalid language name")
+			return
+		}
+		req.Language = &value
 	}
 	if req.Title != nil && (strings.TrimSpace(*req.Title) == "" || len(*req.Title) > 200) || req.Question != nil && (len(strings.TrimSpace(*req.Question)) < 5 || len(*req.Question) > 4000) {
 		apiError(w, 422, "invalid_experiment", "Invalid title or research question")
@@ -276,8 +304,8 @@ func (s *Server) updateExperiment(w http.ResponseWriter, r *http.Request) {
 		if e.Status == "running" || e.Status == "queued" || e.Status == "planning" {
 			return ErrConflict
 		}
-		if (req.Question != nil || req.DatasetID != nil) && e.Attempt > 0 {
-			return stateError("create a new experiment to change the question or dataset after execution")
+		if (req.Question != nil || req.DatasetID != nil || req.Language != nil) && e.Attempt > 0 {
+			return stateError("create a new experiment to change the question, dataset, or language after execution")
 		}
 		if req.Title != nil {
 			e.Title = strings.TrimSpace(*req.Title)
@@ -285,7 +313,10 @@ func (s *Server) updateExperiment(w http.ResponseWriter, r *http.Request) {
 		if req.ProjectID != nil {
 			e.ProjectID = *req.ProjectID
 		}
-		if req.Question != nil || req.DatasetID != nil {
+		if req.Question != nil || req.DatasetID != nil || req.Language != nil {
+			if req.Language != nil {
+				e.Language = *req.Language
+			}
 			if req.Question != nil {
 				e.Question = strings.TrimSpace(*req.Question)
 			}
@@ -310,12 +341,9 @@ func (s *Server) deleteExperiment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.Store.Delete(e.ID); err != nil {
+	if err := s.Store.DeleteWithCleanup(e.ID, func() error { return s.objectStorage().DeletePrefix(r.Context(), "experiments/"+e.ID+"/") }); err != nil {
 		handleError(w, err)
 		return
-	}
-	if err := os.RemoveAll(filepath.Join(s.Config.DataDir, "experiments", e.ID)); err != nil {
-		slog.Warn("artifact cleanup failed", "error", err)
 	}
 	w.WriteHeader(204)
 }
@@ -403,6 +431,13 @@ func (s *Server) putPlan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "invalid_plan", "research_question must match the experiment question")
 		return
 	}
+	if err := validateLanguageChoice(e.Language, p); err != nil {
+		apiError(w, 422, "invalid_language", err.Error())
+		return
+	}
+	if p.Language != "" {
+		p.Language = normalizeLanguage(p.Language)
+	}
 	p.Source = "manual"
 	p.Model = ""
 	if err := s.Registry.Validate(p, false); err != nil {
@@ -414,11 +449,12 @@ func (s *Server) putPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	datasetID := e.DatasetID
+	language := e.Language
 	e, err := s.Store.Mutate(e.ID, "planned", "Manual plan validated and versioned; explicit run required", func(e *Experiment) error {
 		if err := canPlan(e); err != nil {
 			return err
 		}
-		if e.Question != p.ResearchQuestion || e.DatasetID != datasetID {
+		if e.Question != p.ResearchQuestion || e.DatasetID != datasetID || e.Language != language {
 			return ErrConflict
 		}
 		e.Plan = &p
@@ -620,7 +656,7 @@ func (s *Server) artifact(w http.ResponseWriter, r *http.Request, e Experiment, 
 		if a.Name == name {
 			w.Header().Set("Content-Type", a.ContentType)
 			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(name)}))
-			http.ServeFile(w, r, filepath.Join(s.Config.DataDir, "experiments", e.ID, a.Name))
+			s.serveObject(w, r, "experiments/"+e.ID+"/"+a.Name)
 			return true
 		}
 	}
@@ -658,26 +694,42 @@ func (s *Server) bundle(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 404, "artifacts_unavailable", "No artifacts are available yet")
 		return
 	}
+	type source struct {
+		artifact Artifact
+		body     io.ReadCloser
+	}
+	sources := []source{}
+	defer func() {
+		for _, entry := range sources {
+			entry.body.Close()
+		}
+	}()
+	for _, artifact := range as {
+		body, _, err := s.objectStorage().Get(r.Context(), "experiments/"+e.ID+"/"+artifact.Name)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		sources = append(sources, source{artifact, body})
+	}
 	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": e.ID + "-reproducibility.zip"}))
 	zw := zip.NewWriter(w)
-	defer zw.Close()
-	for _, a := range as {
-		f, err := os.Open(filepath.Join(s.Config.DataDir, "experiments", e.ID, a.Name))
-		if err != nil {
-			slog.Error("bundle file", "error", err)
-			return
-		}
-		entry, err := zw.Create(a.Name)
+	for _, source := range sources {
+		entry, err := zw.Create(source.artifact.Name)
 		if err == nil {
-			_, err = io.Copy(entry, f)
+			_, err = io.Copy(entry, source.body)
 		}
-		f.Close()
 		if err != nil {
-			return
+			panic(http.ErrAbortHandler)
 		}
 	}
+	if err = zw.Close(); err != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
+
 func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 	data, err := s.Store.Projects()
 	if err != nil {
@@ -730,7 +782,7 @@ func (s *Server) downloadDataset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": d.Name}))
-	http.ServeFile(w, r, filepath.Join(s.Config.DataDir, "datasets", d.ID+".csv"))
+	s.serveObject(w, r, "datasets/"+d.ID+".csv")
 }
 func (s *Server) uploadDataset(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 11<<20)
@@ -819,18 +871,15 @@ func (s *Server) uploadDataset(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := sha256.Sum256(raw)
 	d := Dataset{newID("ds"), name, rows, header, preview, hex.EncodeToString(sum[:]), int64(len(raw)), time.Now().UTC()}
-	dir := filepath.Join(s.Config.DataDir, "datasets")
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		handleError(w, err)
-		return
-	}
-	path := filepath.Join(dir, d.ID+".csv")
-	if err = os.WriteFile(path, raw, 0600); err != nil {
+	key := "datasets/" + d.ID + ".csv"
+	if err = s.objectStorage().Put(r.Context(), key, "text/csv; charset=utf-8", raw); err != nil {
 		handleError(w, err)
 		return
 	}
 	if err = s.Store.SaveDataset(d); err != nil {
-		_ = os.Remove(path)
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = s.objectStorage().Delete(cleanup, key)
 		handleError(w, err)
 		return
 	}

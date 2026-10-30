@@ -12,6 +12,7 @@ var ErrNotFound = errors.New("not found")
 var ErrConflict = errors.New("operation conflicts with experiment state")
 
 type Experiment struct {
+	Language    string    `json:"language,omitempty"`
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
 	Question    string    `json:"question"`
@@ -28,6 +29,8 @@ type Experiment struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 type Plan struct {
+	Language             string          `json:"language,omitempty"`
+	LanguageReason       string          `json:"language_reason,omitempty"`
 	Code                 string          `json:"code,omitempty"`
 	ResearchQuestion     string          `json:"research_question"`
 	Domain               string          `json:"domain"`
@@ -53,6 +56,8 @@ type Series struct {
 	Points []Point `json:"points"`
 }
 type Result struct {
+	Language        string            `json:"language,omitempty"`
+	RuntimeVersion  string            `json:"runtime_version,omitempty"`
 	XAxisLabel      string            `json:"x_axis_label,omitempty"`
 	YAxisLabel      string            `json:"y_axis_label,omitempty"`
 	Kind            string            `json:"kind"`

@@ -1,4 +1,4 @@
-# Kario
+# Kairo
 
 A general-purpose AI research workspace for designing, running, and reproducing computational experiments.
 
@@ -7,13 +7,18 @@ Start with your own research question. Review the proposed method and code, run 
 ## What it does
 
 - **Custom experiments:** define your own question, hypothesis, method, inputs, and scientific domain.
-- **Open-weight AI planning:** connect Ollama or an OpenAI-compatible model server to generate research plans and Python code.
+- **Open-weight AI planning:** connect Ollama or an OpenAI-compatible model server to generate research plans and experiment code.
 - **Review before execution:** inspect assumptions, requirements, parameters, and code before starting a run.
 - **Isolated execution:** run custom code in Docker with time, CPU, memory, process, and network restrictions.
 - **Evidence and reproduction:** view findings, plots, limitations, and downloadable code, data, reports, and reproduction instructions.
+- **Reports and manuscripts:** generate saved Markdown reports and LaTeX research drafts from completed runs. The writing agent can select useful Matplotlib figures from saved evidence and embed them in either format. Download `.tex` or `.md`, or a ZIP containing the draft and its recorded evidence. Compile manuscripts with LuaLaTeX (including in Overleaf); review claims, authorship, and citations before publication.
+- **Workspace navigation:** Overview, Experiments, Projects, Datasets, Reports, Manuscripts, and Activity.
+- **Interactive Kairo:** open Kairo in the sidebar for a back-and-forth research conversation. It asks contextual follow-ups with clickable choices, accepts free-text answers, and proposes a question and language for review. Select “Discuss this experiment with Kairo” from an experiment to discuss its saved method and evidence. Conversation history stays in this open app session; it is not saved to Postgres.
 - **Research management:** organize projects, upload CSV datasets, track progress, cancel runs, and review plan history.
 
-The homepage includes a sliding **Design → Execute → Evaluate** preview. In the experiment workspace, **Talk to Kairo** starts an ElevenLabs conversation powered by an open-weight Qwen model. Discuss the current method or findings, and apply a research-question draft after reviewing it. The homepage microphone remains a short browser greeting.
+The homepage includes a sliding **Design → Execute → Evaluate** preview. In the experiment workspace, the microphone starts an ElevenLabs conversation powered by an open-weight Qwen model. Discuss the current method or findings, apply a research-question draft after reviewing it, or ask “Generate a report” / “Generate a LaTeX manuscript” for a completed experiment. Generated drafts are saved in the document library with the run attempt, plan version, and evidence hash. Updating an existing agent’s tools uses `node --env-file=.env scripts/setup-voice-agent.mjs --update`. Voice conversations can also display clickable follow-up questions; selecting an answer sends it back to the connected voice agent.
+
+The workspace voice control is a compact microphone; wake-listening preferences are inside its expanded panel. The homepage microphone remains a short browser greeting.
 
 ## Run locally
 
@@ -43,7 +48,7 @@ DATABASE_URL="postgresql://USER:PASSWORD@YOUR-ENDPOINT-pooler.neon.tech/neondb?s
 DATABASE_URL_UNPOOLED="postgresql://USER:PASSWORD@YOUR-ENDPOINT.neon.tech/neondb?sslmode=require&channel_binding=require"
 API_TOKEN=
 
-# AI planning: disabled | ollama | compatible
+# AI planning: disabled | ollama | compatible | google
 MODEL_PROVIDER=disabled
 MODEL_URL=http://127.0.0.1:11434
 MODEL_NAME=qwen3:8b
@@ -86,15 +91,20 @@ neon deploy
 
 If the CLI needs authentication, run `neon login` and finish the browser sign-in first. Neon deploy provisions the declared backend services; run or host the React frontend and Go server separately.
 
-The worker image includes Python, NumPy, and SciPy. Add other scientific packages to the worker image when your study needs them, rebuild it, and restart the backend. Packages are not installed during experiment execution.
+The worker image includes **Python, JavaScript (Node.js), R, Go, and C++**. Choose a language when creating an experiment, or leave **Let the agent choose** selected. The agent uses the detected runtime/library catalog and explains its choice in the reviewed plan. A selected language is enforced by the backend. Missing runtimes or packages prevent execution and are named explicitly.
+
+Python includes NumPy, SciPy, pandas, Polars, scikit-learn, statsmodels, SymPy, NetworkX, Matplotlib, seaborn, scikit-image, and Biopython. R includes jsonlite, data.table, ggplot2, MASS, Matrix, and the standard statistical libraries. JavaScript and Go include their standard libraries; C++ also includes nlohmann/json. The library list in the experiment form comes from the running worker.
+
+Add Python packages to `backend/requirements-worker.txt`, or install other language libraries in `backend/Dockerfile.worker`; rebuild the image and restart the backend. Additional language names can be entered in the form. To execute them, install the runtime and its libraries in the worker image and add an entry to `backend/internal/research/runtimes.json` (extension, run/version argument arrays, optional build arguments, and installed module names). Arguments use `{source}` and `{binary}` placeholders and run without a shell. Julia, Rust, and Ruby have catalog entries but require their runtimes to be installed. Packages are not installed during experiment execution.
+
+Python plans use `python.experiment` and define `run_experiment(inputs, dataset_rows)`. Other languages use `language.experiment`, set `language` to its catalog ID, read `{inputs, dataset_rows, seed}` JSON on stdin, and print one JSON result using the same metrics/findings/limitations schema. Complete executable source, language/runtime provenance, and replay instructions are saved in the reproduction bundle.
 
 ### 4. Start both services
 
 **Terminal 1 — backend**, starting from the project root:
 
 ```sh
-cd backend
-go run -buildvcs=false ./cmd/server
+npm run dev:api
 ```
 
 **Terminal 2 — frontend**, from the project root:
@@ -110,11 +120,50 @@ npm run dev
 | API | http://127.0.0.1:8080/api/v1 |
 | Health check | http://127.0.0.1:8080/healthz |
 
+The npm cache, Go module/build caches, temporary build files, and backend binaries stay under the ignored `backend/data/` folder on the project drive. `npm run build:api` builds a persistent backend binary there. Docker keeps its existing system storage location.
+
 Keep both terminals running. Vite forwards API requests to Go. The default proxy setup needs no additional CORS configuration.
+
+## Store research artifacts in Cloudflare R2
+
+R2 uses the server's S3-compatible client. The bucket endpoint is not an upload credential. In the existing root `.env`:
+
+```dotenv
+R2_ENDPOINT=https://1a299745bf65705ce606f74b58c0756c.r2.cloudflarestorage.com
+R2_BUCKET=kairo
+R2_ACCESS_KEY_ID=YOUR_R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY=YOUR_R2_SECRET_ACCESS_KEY
+STORAGE_BACKEND=local
+```
+
+Create an R2 token with **Object Read & Write** access scoped to `kairo` using [Cloudflare's authentication instructions](https://developers.cloudflare.com/r2/api/tokens/). Keys stay in the Go server; downloads remain behind the existing API authentication. No public bucket access or browser R2 CORS configuration is required.
+
+For existing research, finish/cancel active jobs and stop the backend before migration:
+
+```sh
+npm run migrate:storage -- --delete-local
+```
+
+This uploads database-referenced datasets, attempt files, and generated document source/evidence. It downloads each uploaded object to verify its SHA-256 and size, then clears legacy document bodies from Postgres and, with `--delete-local`, removes verified local research files. A failed upload/verification preserves local files. A repeat run can verify objects already migrated; mismatching existing objects are never overwritten. Project source, `.env`, Docker images, caches, and development logs are outside the migration.
+
+If historical files were already lost, migration first tries to recover representations of saved results, but accepts them only when their SHA-256 and size match the original artifact record. The default migration stops at anything still missing. `--allow-missing` explicitly permits cutover while retaining those references, recording the missing object names in its report, and backing up saved experiment records to R2. It never invents replacement results or overwrites a conflicting object.
+
+After migration succeeds, set `STORAGE_BACKEND=r2` in the same `.env` and start the API with `npm run dev:api`. Fresh deployments with no existing research can set R2 mode immediately after adding credentials. R2 mode fails explicitly for missing credentials or storage errors and never falls back to saving research files on disk. Postgres keeps experiment state and artifact/document metadata. ZIP downloads are assembled from stored objects as a stream without local archive files.
 
 ## Enable AI planning
 
 Install and serve your chosen open-weight model using Ollama or a compatible model server. Then edit the existing root `.env`.
+
+For Google-hosted Gemma (the configured research planner):
+
+```dotenv
+MODEL_PROVIDER=google
+MODEL_URL=https://generativelanguage.googleapis.com/v1beta
+MODEL_NAME=gemma-4-26b-a4b-it
+MODEL_API_KEY=your_google_ai_studio_key
+```
+
+The Go backend calls Google's native `generateContent` API, requests JSON for research plans, and reads only final response text. Gemma 4 thinking is set to minimal. Credentials remain in the root `.env`; the browser does not call the model API directly. This model connection is independent of the ElevenLabs voice agent.
 
 For local Ollama:
 
@@ -263,3 +312,18 @@ public/                  Favicon and homepage artwork
 ```
 
 Further documentation: [backend setup](backend/README.md), [API reference](backend/API.md), [custom experiment contract](backend/GENERAL_EXPERIMENTS.md), and [homepage artwork](docs/home-artwork.md).
+
+## Report and manuscript figures
+
+Leave **Include figures when useful** checked when generating a document, or uncheck it for a text-only draft. The writing agent chooses up to three figures from recorded series, complete numeric CSV columns, or matching metrics across conditions. If the evidence does not support a useful plot, no figure is added. It cannot invent data, fit a new trend, or add unrecorded confidence intervals through the figure renderer.
+
+A fixed Matplotlib renderer runs inside the existing isolated worker (using the worker's installed Matplotlib); trusted local rendering is also available in local development mode. Images and plotting assets are stored with the document in R2. The viewer shows authenticated PNG previews; manuscripts embed vector PDFs using `graphicx`, while Markdown reports reference PNGs. For a complete document, download **Source, figures & evidence ZIP** and keep its `figures/` folder beside `main.tex` or `report.md`.
+
+The ZIP includes `figures.py`, `figure-data.json`, and `requirements-figures.txt`. Reproduce the figures with:
+
+```sh
+python3 -m pip install -r requirements-figures.txt
+python3 figures.py --export < figure-data.json
+```
+
+This re-plots the saved values without rerunning the experiment. PNG/PDF assets are checked against their saved SHA-256 before serving or packaging.

@@ -36,7 +36,7 @@ export function useWakePhrase({ enabled, paused, onWake, onDisable }) {
       setError(code === 'not-allowed' || code === 'service-not-allowed'
         ? 'Allow microphone access to enable Hey Kairo.'
         : code === 'audio-capture' ? 'No microphone is available for Hey Kairo.'
-          : 'Wake listening could not start. Try again, or use Talk to Kairo.');
+          : 'Wake listening could not start. Try again, or select the microphone.');
       setPhase('off');
       recognition?.abort();
       callbacks.current.onDisable?.();

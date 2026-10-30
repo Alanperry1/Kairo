@@ -27,6 +27,9 @@ import (
 //go:embed worker.py
 var workerCode string
 
+//go:embed runtimes.json
+var runtimeCatalog string
+
 type WorkerInput struct {
 	Plan        *Plan               `json:"plan"`
 	DatasetRows []map[string]string `json:"dataset_rows,omitempty"`
@@ -51,7 +54,7 @@ func (p PythonExecutor) Execute(ctx context.Context, input WorkerInput) (Result,
 	if input.Plan == nil {
 		return result, errors.New("experiment plan is required")
 	}
-	if input.Plan.Adapter == "python.experiment" && p.Mode != "docker" {
+	if (input.Plan.Adapter == "python.experiment" || input.Plan.Adapter == "language.experiment") && p.Mode != "docker" {
 		return result, errors.New("custom experiment code requires an isolated Docker worker; local execution is disabled")
 	}
 	data, err := json.Marshal(input)
@@ -61,7 +64,7 @@ func (p PythonExecutor) Execute(ctx context.Context, input WorkerInput) (Result,
 	var cmd *exec.Cmd
 	if p.Mode == "docker" {
 		name := newID("researchos-worker")
-		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "--pull=never", "-i", "--name", name, "--network", "none", "--read-only", "--memory", "768m", "--cpus", "1", "--pids-limit", "64", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--tmpfs", "/tmp:size=16m,noexec,nosuid", "-e", "OPENBLAS_NUM_THREADS=1", "-e", "OMP_NUM_THREADS=1", "-e", "KAIRO_ISOLATED_WORKER=1", p.Image, "python3", "-I", "-c", workerCode)
+		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "--pull=never", "-i", "--name", name, "--network", "none", "--read-only", "--memory", "768m", "--cpus", "1", "--pids-limit", "64", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--tmpfs", "/tmp:size=256m,exec,nosuid,nodev", "-e", "OPENBLAS_NUM_THREADS=1", "-e", "OMP_NUM_THREADS=1", "-e", "KAIRO_ISOLATED_WORKER=1", "-e", "GOCACHE=/tmp/go-cache", "-e", "GOPATH=/tmp/go", "-e", "GOMAXPROCS=1", "-e", "HOME=/tmp", "-e", "MPLCONFIGDIR=/tmp/matplotlib", p.Image, "python3", "-I", "-c", workerCode)
 		defer func() {
 			cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -100,6 +103,7 @@ func (p PythonExecutor) Execute(ctx context.Context, input WorkerInput) (Result,
 }
 
 type Jobs struct {
+	Objects           ObjectStorage
 	store             *Store
 	registry          *Registry
 	executor          Executor
@@ -179,10 +183,10 @@ func (j *Jobs) Input(e Experiment) (WorkerInput, error) {
 	if e.Plan == nil {
 		return input, errors.New("plan is required")
 	}
-	if e.Plan.Adapter != "statistics.welch" && e.Plan.Adapter != "python.experiment" {
+	if e.Plan.Adapter != "statistics.welch" && !isCustomAdapter(e.Plan.Adapter) {
 		return input, nil
 	}
-	if e.Plan.Adapter == "python.experiment" && e.DatasetID == "" {
+	if isCustomAdapter(e.Plan.Adapter) && e.DatasetID == "" {
 		return input, nil
 	}
 	if e.DatasetID == "" {
@@ -192,7 +196,7 @@ func (j *Jobs) Input(e Experiment) (WorkerInput, error) {
 	if err != nil {
 		return input, err
 	}
-	raw, err := os.ReadFile(filepath.Join(j.root, "datasets", d.ID+".csv"))
+	raw, err := readObject(j.ctx, j.objectStorage(), "datasets/"+d.ID+".csv", 11<<20)
 	if err != nil {
 		return input, err
 	}
@@ -205,7 +209,7 @@ func (j *Jobs) Input(e Experiment) (WorkerInput, error) {
 	if err != nil {
 		return input, err
 	}
-	if e.Plan.Adapter == "python.experiment" {
+	if isCustomAdapter(e.Plan.Adapter) {
 		for {
 			row, readErr := reader.Read()
 			if readErr == io.EOF {
@@ -300,7 +304,7 @@ func (j *Jobs) run(e Experiment) {
 		j.fail(e.ID, e.Attempt, ctx.Err())
 		return
 	}
-	if err = j.writeArtifacts(e, input, result); err != nil {
+	if err = j.writeArtifactsWithContext(ctx, e, input, result); err != nil {
 		j.fail(e.ID, e.Attempt, fmt.Errorf("artifact packaging: %w", err))
 		return
 	}
@@ -331,15 +335,9 @@ func (j *Jobs) fail(id string, attempt int, cause error) {
 	}
 }
 func (j *Jobs) writeArtifacts(e Experiment, input WorkerInput, result Result) error {
-	parent := filepath.Join(j.root, "experiments", e.ID)
-	if err := os.MkdirAll(parent, 0700); err != nil {
-		return err
-	}
-	tmp, err := os.MkdirTemp(parent, ".attempt-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
+	return j.writeArtifactsWithContext(context.Background(), e, input, result)
+}
+func (j *Jobs) writeArtifactsWithContext(ctx context.Context, e Experiment, input WorkerInput, result Result) (err error) {
 	prefix := fmt.Sprintf("attempt-%03d", e.Attempt)
 	files := map[string][]byte{}
 	encode := func(name string, v any) error {
@@ -360,23 +358,24 @@ func (j *Jobs) writeArtifacts(e Experiment, input WorkerInput, result Result) er
 		return err
 	}
 	files["worker.py"] = []byte(workerCode)
+	files["runtimes.json"] = []byte(runtimeCatalog)
 	if e.Plan.Code != "" {
-		files["experiment.py"] = []byte(e.Plan.Code)
+		files[sourceFilename(*e.Plan)] = []byte(e.Plan.Code)
 	}
 	files["data.csv"] = []byte(result.CSV)
 	files["chart.svg"] = []byte(renderSVG(result, e.Plan.Adapter))
 	files["report.md"] = []byte(renderReport(e, result))
-	deps := []string{"# Python " + result.PythonVersion}
+	deps := []string{"# Runtime: " + planLanguage(*e.Plan) + " " + result.RuntimeVersion, "# Python worker " + result.PythonVersion}
 	for name, v := range result.Dependencies {
-		if name != "python" {
+		if name != "python" && planLanguage(*e.Plan) == "python" {
 			deps = append(deps, name+"=="+v)
 		}
 	}
 	sort.Strings(deps)
 	files["requirements.txt"] = []byte(strings.Join(deps, "\n") + "\n")
 	files["REPRODUCE.md"] = []byte("# Reproduce this computational experiment\n\nUse the Python version in provenance.json. Install requirements.txt if nonempty. Run:\n\n```sh\npython3 -m pip install -r requirements.txt\npython3 -I worker.py < input.json > replay.json\n```\n\nCompare replay.json metrics with results.json. Physics and statistical computations are deterministic within floating-point/library differences. Benchmark timing varies across hardware and load. AI narrative is separately labeled and is not reproduced by this command. input.json includes the exact selected data values for statistical analyses. Template adapters use fixed code. General experiments include custom experiment.py, which must be reviewed and replayed in an isolated Docker worker. For general replay use the recorded worker image with --network none --read-only --memory 768m --cpus 1 --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 -e KAIRO_ISOLATED_WORKER=1, mounting the extracted attempt directory read-only; run python3 -I worker.py with input.json on stdin.\n")
-	if e.Plan.Adapter == "python.experiment" {
-		files["REPRODUCE.md"] = []byte("# Reproduce this custom experiment\n\nReview experiment.py and the methodology before running custom code. Use the same worker image and dependency versions recorded in provenance.json. The commands below use the default local image name; replace it if provenance records another image.\n\nFrom the extracted attempt directory:\n\n```sh\ndocker run --rm -i --pull=never --network none --read-only \\\n  --memory 768m --cpus 1 --pids-limit 64 --cap-drop ALL \\\n  --security-opt no-new-privileges --user 65534:65534 \\\n  --tmpfs /tmp:size=16m,noexec,nosuid \\\n  --mount \"type=bind,src=$(pwd),dst=/experiment,readonly\" \\\n  -w /experiment -e KAIRO_ISOLATED_WORKER=1 \\\n  -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 \\\n  researchos-worker:local python3 -I worker.py < input.json > replay.json\n```\n\ninput.json contains the exact reviewed code, parameters, and selected dataset rows. Compare replay.json metrics with results.json. Floating-point/library differences and benchmark timing can vary. AI interpretation is not reproduced. No API token or model credentials are needed.\n")
+	if isCustomAdapter(e.Plan.Adapter) {
+		files["REPRODUCE.md"] = []byte("# Reproduce this custom experiment\n\nReview the experiment source and methodology before running custom code. Use the same worker image and dependency versions recorded in provenance.json. The commands below use the default local image name; replace it if provenance records another image.\n\nFrom the extracted attempt directory:\n\n```sh\ndocker run --rm -i --pull=never --network none --read-only \\\n  --memory 768m --cpus 1 --pids-limit 64 --cap-drop ALL \\\n  --security-opt no-new-privileges --user 65534:65534 \\\n  --tmpfs /tmp:size=256m,exec,nosuid,nodev \\\n  --mount \"type=bind,src=$(pwd),dst=/experiment,readonly\" \\\n  -w /experiment -e KAIRO_ISOLATED_WORKER=1 -e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOPATH=/tmp/go -e GOMAXPROCS=1 -e MPLCONFIGDIR=/tmp/matplotlib \\\n  -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 \\\n  researchos-worker:local python3 -I worker.py < input.json > replay.json\n```\n\ninput.json contains the exact reviewed code, parameters, and selected dataset rows. Compare replay.json metrics with results.json. Floating-point/library differences and benchmark timing can vary. AI interpretation is not reproduced. No API token or model credentials are needed.\n")
 	}
 	var dataset *Dataset
 	if e.DatasetID != "" {
@@ -387,7 +386,7 @@ func (j *Jobs) writeArtifacts(e Experiment, input WorkerInput, result Result) er
 		dataset = &d
 	}
 	workerHash := sha256.Sum256([]byte(workerCode))
-	provenance := map[string]any{"experiment_id": e.ID, "attempt": e.Attempt, "plan_version": e.PlanVersion, "plan_source": e.Plan.Source, "planner_model": e.Plan.Model, "narrative_source": result.NarrativeSource, "adapter": e.Plan.Adapter, "worker_sha256": hex.EncodeToString(workerHash[:]), "python_version": result.PythonVersion, "dependencies": result.Dependencies, "dataset": dataset, "execution_mode": j.mode, "worker_image": j.image, "api_go_version": runtime.Version(), "api_platform": runtime.GOOS + "/" + runtime.GOARCH, "created_at": time.Now().UTC(), "timeout_seconds": e.Plan.TimeoutSeconds, "seed_and_parameters": e.Plan.Parameters}
+	provenance := map[string]any{"experiment_id": e.ID, "attempt": e.Attempt, "plan_version": e.PlanVersion, "plan_source": e.Plan.Source, "planner_model": e.Plan.Model, "narrative_source": result.NarrativeSource, "adapter": e.Plan.Adapter, "worker_sha256": hex.EncodeToString(workerHash[:]), "python_version": result.PythonVersion, "language": planLanguage(*e.Plan), "runtime_version": result.RuntimeVersion, "dependencies": result.Dependencies, "dataset": dataset, "execution_mode": j.mode, "worker_image": j.image, "api_go_version": runtime.Version(), "api_platform": runtime.GOOS + "/" + runtime.GOARCH, "created_at": time.Now().UTC(), "timeout_seconds": e.Plan.TimeoutSeconds, "seed_and_parameters": e.Plan.Parameters}
 	if e.Plan.Code != "" {
 		hash := sha256.Sum256([]byte(e.Plan.Code))
 		provenance["experiment_code_sha256"] = hex.EncodeToString(hash[:])
@@ -405,13 +404,10 @@ func (j *Jobs) writeArtifacts(e Experiment, input WorkerInput, result Result) er
 		return err
 	}
 	for name, data := range files {
-		if err = os.WriteFile(filepath.Join(tmp, name), data, 0600); err != nil {
-			return err
-		}
 		hash := sha256.Sum256(data)
 		mime := "application/json"
 		switch filepath.Ext(name) {
-		case ".md", ".txt", ".py":
+		case ".md", ".txt", ".py", ".js", ".R", ".go", ".cpp", ".jl", ".rs", ".rb":
 			mime = "text/plain; charset=utf-8"
 		case ".csv":
 			mime = "text/csv; charset=utf-8"
@@ -420,13 +416,25 @@ func (j *Jobs) writeArtifacts(e Experiment, input WorkerInput, result Result) er
 		}
 		artifacts = append(artifacts, Artifact{prefix + "/" + name, mime, int64(len(data)), hex.EncodeToString(hash[:])})
 	}
-	final := filepath.Join(parent, prefix)
-	if err = os.Rename(tmp, final); err != nil {
-		return err
+	objectPrefix := "experiments/" + e.ID + "/" + prefix + "/"
+	committed := false
+	defer func() {
+		if !committed {
+			cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = j.objectStorage().DeletePrefix(cleanup, objectPrefix)
+		}
+	}()
+	for _, artifact := range artifacts {
+		name := strings.TrimPrefix(artifact.Name, prefix+"/")
+		if err = j.objectStorage().Put(ctx, objectPrefix+name, artifact.ContentType, files[name]); err != nil {
+			return err
+		}
 	}
 	if err = j.store.SaveArtifacts(e.ID, artifacts); err != nil {
 		return err
 	}
+	committed = true
 	return nil
 }
 func renderReport(e Experiment, r Result) string {

@@ -5,13 +5,14 @@ import { domainLabels, isBusy, labels, shortID, timeAgo } from '../templates';
 import { saveDownload } from '../api';
 import ResultChart from './ResultChart';
 import VoiceAgent from './VoiceAgent';
+import { DocumentActions } from './ResearchDocuments';
 import { experimentVoiceContext } from '../voice-context';
 
 export function Status({ status }) {
   return <span className={`status ${status?.replaceAll('_', '-')}`}>{isBusy(status) ? <LoaderCircle className="spinning" size={12}/> : status === 'completed' ? <Check size={12}/> : <span className="status-dot"/>}{labels[status] || status}</span>;
 }
 
-export default function ExperimentDetails({ api, id, revision, settings, datasets, onChanged, onClose, notify, onNewQuestion }) {
+export default function ExperimentDetails({ api, id, revision, settings, datasets, onChanged, onClose, notify, onNewQuestion, onAskKairo, onDocumentCreated }) {
   const detail = useExperiment(api, id, revision);
   const [pending, setPending] = useState('');
   const [actionError, setActionError] = useState('');
@@ -51,15 +52,17 @@ export default function ExperimentDetails({ api, id, revision, settings, dataset
     <div className="experiment-dialog-heading"><span className="eyebrow">{shortID(id)}{plan && ` · ${domainLabels[plan.domain] || plan.domain}`}</span><h3>{experiment.title}</h3><div><Status status={experiment.status}/><span className="detail-caption">Updated {timeAgo(experiment.updated_at)}</span></div></div>
     {(detail.error || actionError || experiment.error) && <div className="inline-error" role="alert">{actionError || experiment.error || detail.error}</div>}
     {busy && <div className="run-progress"><div><span>{experiment.status === 'planning' ? 'The model is designing your experiment…' : experiment.status === 'queued' ? 'Waiting for a scientific worker…' : 'Running and analyzing the experiment…'}</span><strong>{experiment.progress}%</strong></div><div className="progress"><i style={{ width: `${experiment.progress}%` }}/></div></div>}
-    <VoiceAgent showWakeActivation={false} api={api} available={settings?.voice_enabled} context={experimentVoiceContext(experiment)} onQuestion={onNewQuestion}/>
+    <VoiceAgent showWakeActivation={false} api={api} available={settings?.voice_enabled} context={experimentVoiceContext(experiment)} onQuestion={onNewQuestion} onDocumentCreated={onDocumentCreated}/>
+    {onAskKairo && <button type="button" className="chat-form-link" onClick={()=>onAskKairo('',experiment)}>Discuss this experiment with Kairo<ArrowDownToLine size={13}/></button>}
     <div className="detail-tabs" role="group" aria-label="Experiment sections">{['Plan', 'Results', 'Activity', 'Artifacts'].map((name) => <button className={tab === name ? 'selected' : ''} key={name} onClick={() => setTab(name)}>{name}{name === 'Artifacts' && detail.artifacts.length > 0 && <span>{detail.artifacts.length}</span>}</button>)}</div>
     {tab === 'Plan' && <>
       {experiment.question !== experiment.title && <div className="detail-section"><h3>Research question</h3><p>{experiment.question}</p></div>}{dataset && <p className="form-help">Dataset: {dataset.name}</p>}
       {plan && !editing && <>
         <div className="detail-section"><h3>Hypothesis</h3><p>{plan.hypothesis}</p></div>
-        <div className="detail-section"><h3>Methodology</h3><p>{plan.methodology}</p><div className="plan-metadata"><span className="domain-tag">{plan.adapter}</span><span className="domain-tag">{plan.source === 'model' ? plan.model : 'Manual plan'}</span><span className="domain-tag">{plan.timeout_seconds}s timeout</span></div></div>
+        <div className="detail-section"><h3>Methodology</h3><p>{plan.methodology}</p><div className="plan-metadata"><span className="domain-tag">{({python:'Python',javascript:'JavaScript',r:'R',go:'Go',cpp:'C++'})[plan.language] || plan.language || 'Python'}</span><span className="domain-tag">{plan.source === 'model' ? plan.model : 'Manual plan'}</span><span className="domain-tag">{plan.timeout_seconds}s timeout</span></div></div>
+        {plan.language_reason && <p className="form-help">{plan.language_reason}</p>}
         <details className="code-disclosure"><summary>Assumptions & limitations</summary><div className="detail-section"><h3>Assumptions</h3><ul>{plan.assumptions.map((s, i) => <li key={i}>{s}</li>)}</ul><h3>Limitations</h3><ul>{plan.limitations.map((s, i) => <li key={i}>{s}</li>)}</ul></div></details>
-        {plan.code && <details className="code-disclosure"><summary>Experiment code · Python</summary><p className="form-help">Review this custom code and its methodology before running. Execution requires an isolated Docker worker.</p><pre>{plan.code}</pre></details>}
+        {plan.code && <details className="code-disclosure"><summary>Experiment code · {({python:'Python',javascript:'JavaScript',r:'R',go:'Go',cpp:'C++'})[plan.language] || plan.language || 'Python'}</summary><p className="form-help">Review this custom code and its methodology before running. Execution requires an isolated Docker worker.</p><pre>{plan.code}</pre></details>}
         <details className="code-disclosure"><summary>Parameters & variables</summary><pre>{JSON.stringify({ parameters: plan.parameters, independent_variables: plan.independent_variables, dependent_variables: plan.dependent_variables, controlled_variables: plan.controlled_variables }, null, 2)}</pre></details>
       </>}
       {!plan && !editing && <div className="inline-notice">No plan yet. {settings?.model_provider === 'disabled' ? 'Connect an AI model to design a custom experiment, or paste a manual plan below.' : 'Generate a plan with the configured model, or supply a manual plan.'}</div>}
@@ -87,11 +90,12 @@ export default function ExperimentDetails({ api, id, revision, settings, dataset
     </> : <div className="empty-state"><FileText size={22}/><h3>No results yet</h3><p>Review the plan and run the experiment to collect evidence.</p></div>)}
     {tab === 'Activity' && <div className="event-log">{detail.events.length ? detail.events.map((event) => <div key={event.id}><span className="status-dot"/><div><strong>{event.kind.replaceAll('_', ' ')}</strong><p>{event.message}</p><time>{new Date(event.created_at).toLocaleString()}</time></div></div>) : <p>No events available.</p>}</div>}
     {tab === 'Artifacts' && <div className="artifact-list">{detail.artifacts.length ? detail.artifacts.map((artifact) => <button key={artifact.name} disabled={!!pending} onClick={() => download('artifact', artifact.name)}><FileText size={16}/><span>{artifact.name}<small>{(artifact.size / 1024).toFixed(1)} KB · SHA-256 {artifact.sha256.slice(0, 12)}…</small></span><ArrowDownToLine size={15}/></button>) : <div className="empty-state"><h3>No artifacts yet</h3><p>Successful runs produce code, data, charts, reports, and reproduction instructions.</p></div>}</div>}
+    <DocumentActions api={api} experiment={experiment} onGenerated={(document) => { onChanged(); onDocumentCreated(document); }}/>
     {pending && <p className="action-progress" role="status"><LoaderCircle size={13} className="spinning"/>{pending}…</p>}
     <div className="experiment-actions">
       <div>{!busy && <details className="more-actions"><summary>More</summary><button className="button danger-quiet" disabled={!!pending} onClick={() => setConfirmDelete((value) => !value)}><Trash2 size={13}/>Delete</button></details>}</div>
       <div>{detail.artifacts.length > 0 && <button className="button secondary" disabled={!!pending} onClick={() => download('bundle')}><ArrowDownToLine size={13}/>Reproduction bundle</button>}{experiment.status === 'completed' && <button className="button secondary" disabled={!!pending} onClick={() => download('report')}><FileText size={13}/>Report</button>}{busy && <button className="button secondary" disabled={pending === 'Cancelling'} onClick={() => perform('Cancelling', () => api.cancelExperiment(id))}><Square size={12}/>Cancel run</button>}{canRun && <button className="button primary" disabled={!!pending || editing} onClick={() => perform('Starting experiment', () => api.runExperiment(id))}><Play size={13}/>{experiment.attempt ? 'Retry experiment' : 'Run experiment'}</button>}</div>
     </div>
-    {confirmDelete && <div className="inline-error delete-confirm"><p>Delete this experiment and its saved artifacts? This cannot be undone.</p><button className="button danger" disabled={!!pending} onClick={() => perform('Deleting experiment', async () => { await api.deleteExperiment(id); notify('Experiment deleted'); onClose(); })}>Delete permanently</button><button className="button secondary" onClick={() => setConfirmDelete(false)}>Keep experiment</button></div>}
+    {confirmDelete && <div className="inline-error delete-confirm"><p>Delete this experiment, its saved artifacts, and generated reports and manuscripts? This cannot be undone.</p><button className="button danger" disabled={!!pending} onClick={() => perform('Deleting experiment', async () => { await api.deleteExperiment(id); notify('Experiment deleted'); onClose(); })}>Delete permanently</button><button className="button secondary" onClick={() => setConfirmDelete(false)}>Keep experiment</button></div>}
   </>;
 }

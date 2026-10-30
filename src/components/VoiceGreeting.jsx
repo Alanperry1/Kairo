@@ -66,7 +66,7 @@ export default function VoiceGreeting() {
   return <div className={`lp-voice-visual ${speaking ? 'is-speaking' : ''}`}>
     <div className="lp-voice-wave" aria-hidden="true">{wave.map((height, index) => <span key={index} style={{ height: `${height}px`, '--bar-index': index }}/>)}</div>
     <button className="lp-voice-orb lp-voice-button" type="button" aria-label={speaking ? 'Stop Kairo greeting' : 'Play Kairo greeting'} aria-pressed={speaking} title="Play browser voice demo" onClick={playGreeting}>{speaking ? <Volume2 size={23} strokeWidth={1.3}/> : <Mic size={23} strokeWidth={1.3}/>}</button>
-    <p>From a spoken idea<br/>to a question worth testing.</p>
+    <p>Speak your next idea.</p>
     {error && <p className="lp-voice-error" role="alert">{error}</p>}
   </div>;
 }

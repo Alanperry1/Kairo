@@ -62,8 +62,16 @@ export function createAPI({ baseURL = '/api/v1', getToken = () => '', fetcher = 
     projects: (signal) => request('/projects', { signal }),
     createProject: (body) => request('/projects', { method: 'POST', body }),
     datasets: (signal) => request('/datasets', { signal }),
+    chat: (body, signal) => request('/assistant/chat', { method: 'POST', body, signal }),
+    languages: (signal) => request('/languages', { signal }),
     tools: (signal) => request('/tools', { signal }),
     activity: (signal) => request('/activity', { signal }),
+    documents: (filters = {}, signal) => request(`/documents?${new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '' && value !== undefined))}`, { signal }),
+    getDocument: (id, signal) => request(`/documents/${pathID(id)}`, { signal }),
+    generateDocument: (id, kind, signal, options = {}) => request(`${item(id)}/documents`, { method: 'POST', body: { kind, ...options }, signal }),
+    downloadDocument: (id) => request(`/documents/${pathID(id)}/download`, { binary: true }),
+    downloadDocumentFigure: (id, name, signal) => request(`/documents/${pathID(id)}/figures/${name.split('/').map(pathID).join('/')}`, { binary: true, signal }),
+    downloadDocumentBundle: (id) => request(`/documents/${pathID(id)}/bundle`, { binary: true }),
     reports: (signal) => request('/reports', { signal }),
     uploadDataset: (file) => {
       const form = new FormData();

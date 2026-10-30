@@ -92,4 +92,38 @@ describe('ElevenLabs research conversations', () => {
     unmount(); await act(async () => resolve({ signed_url: sessionURL }));
     expect(sdk.startSession).not.toHaveBeenCalled();
   });
+  it('generates a saved manuscript through the voice tool and opens the actual document', async () => {
+    const document = { id: 'doc_saved', kind: 'manuscript', title: 'Growth evidence' };
+    const api = { ...client(), generateDocument: vi.fn().mockResolvedValue(document) }; const open = vi.fn();
+    render(<VoiceConversation api={api} context={{ id: 'exp_done', status: 'completed' }} onDocumentCreated={open}/>);
+    let result; await act(async () => { result = JSON.parse(await sdk.tools.generate_research_document({ kind: 'manuscript' })); });
+    expect(result.saved).toBe(true); expect(api.generateDocument).toHaveBeenCalledWith('exp_done', 'manuscript', expect.any(AbortSignal));
+    await userEvent.click(screen.getByRole('button', { name: 'Open draft' })); expect(open).toHaveBeenCalledWith(document);
+  });
+  it('does not claim a saved document when generation fails', async () => {
+    const api = { ...client(), generateDocument: vi.fn().mockRejectedValue(new Error('No completed evidence')) };
+    render(<VoiceConversation api={api} context={{ id: 'exp_done' }}/>);
+    let result; await act(async () => { result = JSON.parse(await sdk.tools.generate_research_document({ kind: 'report' })); });
+    expect(result.saved).toBeUndefined(); expect(result.error).toContain('No completed evidence');
+    expect(screen.queryByRole('button', { name: 'Open draft' })).toBeNull();
+  });
+
+  it('shares actual installed languages and libraries with the agent', async () => {
+    const capabilities = {data:[{id:'r',available:true,modules:['jsonlite','data.table']}]};
+    const api={...client(),languages:vi.fn().mockResolvedValue(capabilities)};
+    render(<VoiceConversation api={api} context={{language:'auto'}}/>);
+    let result;await act(async()=>{result=JSON.parse(await sdk.tools.get_research_capabilities());});
+    expect(result).toEqual(capabilities);expect(api.languages).toHaveBeenCalledOnce();
+  });
+
+  it('lets the voice agent ask a question and sends a selected answer back once', async () => {
+    sdk.status='connected';render(<VoiceConversation api={client()} context={{view:'experiment'}}/>);
+    let result;act(()=>{result=JSON.parse(sdk.tools.ask_research_question({question:'Which outcome matters most?',options:['Accuracy','Runtime','Memory']}));});
+    expect(result.awaiting_user_answer).toBe(true);expect(sdk.sendUserMessage).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button',{name:'Runtime'}));
+    expect(sdk.sendUserMessage).toHaveBeenCalledWith('For your question "Which outcome matters most?", I choose: Runtime');
+    expect(screen.getByRole('button',{name:'Runtime'}).disabled).toBe(true);
+    expect(JSON.parse(sdk.tools.ask_research_question({question:'Bad options?',options:['Same','same']})).error).toBeTruthy();
+  });
+
 });

@@ -111,3 +111,17 @@ Manual/general plans can be saved before Docker is available. `POST .../run` ret
 `POST /api/v1/voice/session` requires the same workspace bearer token as other API routes. It returns `{ "signed_url": "wss://api.elevenlabs.io/v1/convai/conversation?..." }`, a temporary ElevenLabs connection URL. The API key stays server-side and responses use `Cache-Control: no-store`. No body is required.
 
 Configure `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID` in the shared root `.env`. `GET /api/v1/settings` includes `voice_enabled`, which reports whether both settings exist; it does not perform a live credential check. Unconfigured sessions return `503 voice_not_configured`, provider authentication failures return `502 voice_credentials_rejected`, rate limits return `503 voice_busy`, and other provider/network errors return `502 voice_unavailable`. Provider error bodies and credentials are never forwarded.
+
+### Language capabilities
+
+`GET /api/v1/languages` returns `{data: [{id, available, version, modules, extension}]}` from the worker startup probe. Create an experiment with optional `language` (`auto`, `python`, `javascript`, `r`, `go`, `cpp`, or another runtime name). `PATCH /api/v1/experiments/{id}` can change `language` before execution and clears the prior plan. Explicit preferences are enforced when saving or generating plans. General non-Python plans use adapter `language.experiment` plus `language` and `language_reason`; the normal review/run endpoints apply. Uninstalled runtimes or required libraries reject execution with HTTP 422.
+
+### Interactive research conversation
+
+`POST /api/v1/assistant/chat` accepts `{messages: [{role: "user" | "assistant", content: string}], experiment_id?: string}`. Supply 1–24 messages, end with a user turn, and keep total text under 32000 characters. Optional experiment context is loaded from the database. The response contains `message`, optional `follow_up: {prompt, options: string[]}` (2–5 distinct choices), and optional `draft: {question, language}`. A reply never saves or runs an experiment; the user explicitly reviews and submits a proposed draft. Invalid model output returns 502; provider throttling returns 429 with `Retry-After`. Chat history is provided by the client and is not persisted.
+
+### Evidence figures in generated documents
+
+`POST /api/v1/experiments/{id}/documents` accepts `{kind: "report" | "manuscript", include_figures?: boolean}`. Omit `include_figures` for automatic useful-figure selection; `false` requests text only. Successful document responses may include `figures: [{name, pdf, caption, source, kind, renderer}]`.
+
+`GET /api/v1/documents/{documentID}/figures/{name...}` serves only the document's listed PNG/PDF figures behind the existing API authentication. Asset hashes are verified. The document bundle includes images, vector PDFs, the figure manifest, and fixed plotting code/data/requirements. LaTeX uses relative vector PDF paths, so use the complete ZIP when compiling a manuscript with figures. No generated Python code is executed by the figure renderer; the writing agent selects validated evidence sources, not numerical values or file paths.

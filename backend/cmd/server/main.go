@@ -27,6 +27,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	objects, err := research.NewObjectStorage(cfg)
+	if err != nil {
+		return err
+	}
 	store, err := research.OpenStoreWithMigrationURL(cfg.DatabaseURL, cfg.DatabaseURLUnpooled)
 	if err != nil {
 		return err
@@ -35,29 +39,31 @@ func run() error {
 	if err = store.Recover(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	probeCode := "import importlib.util,importlib.metadata,json,sys; assert sys.version_info >= (3,10); names=set(sys.stdlib_module_names)|set(importlib.metadata.packages_distributions()); print(json.dumps(sorted(n for n in names if n.isidentifier() and not n.startswith('_') and importlib.util.find_spec(n))))"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	probeCode := research.WorkerProbeCode()
 	var probe *exec.Cmd
 	if cfg.WorkerMode == "docker" {
-		probe = exec.CommandContext(ctx, "docker", "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--memory", "768m", "--cpus", "1", "--pids-limit", "64", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "-e", "OPENBLAS_NUM_THREADS=1", cfg.WorkerImage, "python3", "-I", "-c", probeCode)
+		probe = exec.CommandContext(ctx, "docker", "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--memory", "768m", "--cpus", "1", "--pids-limit", "64", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--tmpfs", "/tmp:size=32m,nosuid,nodev", "-e", "OPENBLAS_NUM_THREADS=1", cfg.WorkerImage, "python3", "-I", "-c", probeCode, "--capabilities")
 	} else {
-		probe = exec.CommandContext(ctx, cfg.Python, "-I", "-c", probeCode)
+		probe = exec.CommandContext(ctx, cfg.Python, "-I", "-c", probeCode, "--capabilities")
 	}
 	probeOutput, probeErr := probe.Output()
 	cancel()
-	var modules []string
+	var capabilities research.WorkerCapabilities
 	if probeErr == nil {
-		probeErr = json.Unmarshal(probeOutput, &modules)
+		probeErr = json.Unmarshal(probeOutput, &capabilities)
 	}
-	registry := research.NewRegistry(cfg.Python, cfg.WorkerMode, slices.Contains(modules, "scipy"))
-	registry.SetAvailableModules(modules)
+	registry := research.NewRegistry(cfg.Python, cfg.WorkerMode, slices.Contains(capabilities.Modules, "scipy"))
+	registry.SetAvailableModules(capabilities.Modules)
+	registry.SetLanguages(capabilities.Languages)
 	registry.SetWorkerAvailability(probeErr == nil, "Worker probe failed; check Python 3.10+, or the Docker daemon and locally built worker image")
 	model := research.NewModelClient(cfg.ModelProvider, cfg.ModelURL, cfg.ModelName, cfg.ModelKey)
 	executor := research.PythonExecutor{Python: cfg.Python, Mode: cfg.WorkerMode, Image: cfg.WorkerImage}
 	jobs := research.NewJobs(store, registry, executor, model, cfg.DataDir, cfg.WorkerMode, cfg.WorkerImage, cfg.Workers)
+	jobs.Objects = objects
 	jobs.Start()
 	defer jobs.Close()
-	app := &research.Server{Config: cfg, Store: store, Registry: registry, Model: model, Jobs: jobs}
+	app := &research.Server{Objects: objects, Config: cfg, Store: store, Registry: registry, Model: model, Jobs: jobs}
 	server := &http.Server{Addr: cfg.Addr, Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	stopped := make(chan error, 1)
 	go func() {

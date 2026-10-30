@@ -26,6 +26,12 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const props = { api: {}, available: true, context: { view: 'experiments' } };
 
+function enableWake() {
+  fireEvent.click(screen.getByRole('button', { name: 'Open voice panel' }));
+  fireEvent.click(screen.getByRole('switch', { name: 'Listen for Hey Kairo' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Close voice panel' }));
+}
+
 describe('Hey Kairo activation', () => {
   it('matches the wake phrase and spelling variants without matching ordinary words', () => {
     for (const phrase of ['Hey Kairo', 'hey kario!', 'HEY, CAIRO.', 'Hey Kyro can you help?']) expect(hasWakePhrase(phrase)).toBe(true);
@@ -34,7 +40,7 @@ describe('Hey Kairo activation', () => {
   it('listens only after opt-in and opens an automatically starting session once', async () => {
     const user = userEvent.setup(); render(<VoiceAgent {...props}/>);
     expect(instances).toHaveLength(0);
-    await user.click(screen.getByRole('switch', { name: 'Listen for Hey Kairo' }));
+    enableWake();
     expect(instances).toHaveLength(1);
     const recognition = instances[0];
     expect(recognition.continuous).toBe(true);
@@ -48,13 +54,13 @@ describe('Hey Kairo activation', () => {
     expect(instances).toHaveLength(1);
     await user.click(screen.getByRole('button', { name: 'Close voice panel' }));
     await waitFor(() => expect(instances).toHaveLength(2));
-    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true');
-    await user.click(screen.getByRole('button', { name: 'Talk to Kairo' }));
+    expect(screen.queryByRole('switch')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Open voice panel' }));
     expect((await screen.findByTestId('voice-session')).getAttribute('data-autostart')).toBe('false');
   });
   it('stops recognition when hidden, resumes when visible, and cleans up on unmount', async () => {
     const user = userEvent.setup(); const { unmount } = render(<VoiceAgent {...props}/>);
-    await user.click(screen.getByRole('switch'));
+    enableWake();
     act(() => { visibility = 'hidden'; fireEvent(document, new Event('visibilitychange')); });
     expect(instances[0].abort).toHaveBeenCalled();
     act(() => instances[0].result('Hey Kairo'));
@@ -65,20 +71,21 @@ describe('Hey Kairo activation', () => {
   });
   it('turns off after denied microphone permission and keeps manual voice available', async () => {
     const user = userEvent.setup(); render(<VoiceAgent {...props}/>);
-    await user.click(screen.getByRole('switch'));
+    enableWake();
     act(() => instances[0].onerror({ error: 'not-allowed' }));
     expect(screen.getByRole('alert').textContent).toContain('Allow microphone access');
-    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false');
+    expect(screen.queryByRole('switch')).toBeNull();
     expect(instances[0].abort).toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Talk to Kairo' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open voice panel' })).toBeTruthy();
   });
   it('restarts after silence but cancels pending restarts when switched off', () => {
     vi.useFakeTimers(); render(<VoiceAgent {...props}/>);
-    fireEvent.click(screen.getByRole('switch'));
+    enableWake();
     act(() => instances[0].onend());
     act(() => vi.advanceTimersByTime(500));
     expect(instances[0].start).toHaveBeenCalledTimes(2);
     act(() => instances[0].onend());
+    fireEvent.click(screen.getByRole('button', { name: 'Open voice panel' }));
     fireEvent.click(screen.getByRole('switch'));
     act(() => vi.advanceTimersByTime(1000));
     expect(instances[0].start).toHaveBeenCalledTimes(2);
@@ -86,7 +93,7 @@ describe('Hey Kairo activation', () => {
   it('keeps listening in experiment views even when the wake controls are hidden', async () => {
     const view = (key, showWakeActivation) => <VoiceActivationProvider><VoiceAgent key={key} {...props} showWakeActivation={showWakeActivation}/></VoiceActivationProvider>;
     const { rerender } = render(view('list', true));
-    fireEvent.click(screen.getByRole('switch'));
+    enableWake();
     rerender(view('detail', false));
     expect(instances[0].abort).toHaveBeenCalled();
     expect(instances).toHaveLength(2);
@@ -100,7 +107,8 @@ describe('Hey Kairo activation', () => {
     vi.stubGlobal('SpeechRecognition', undefined);
     render(<VoiceAgent {...props}/>);
     expect(screen.queryByRole('switch')).toBeNull();
-    expect(screen.getByText(/Wake phrases aren’t supported/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Talk to Kairo' })).toBeTruthy();
+    expect(screen.queryByText('Kairo voice')).toBeNull();
+    expect(screen.queryByText('Think through your experiment, together.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open voice panel' })).toBeTruthy();
   });
 });

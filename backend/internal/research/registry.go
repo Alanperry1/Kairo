@@ -24,7 +24,10 @@ type Tool struct {
 	Outputs           []string `json:"outputs"`
 	ExampleParameters any      `json:"example_parameters"`
 }
-type Registry struct{ tools []Tool }
+type Registry struct {
+	tools     []Tool
+	languages []Language
+}
 type GeneralParams struct {
 	Inputs          map[string]any `json:"inputs"`
 	Seed            int64          `json:"seed"`
@@ -91,8 +94,15 @@ func NewRegistry(python, mode string, scipyAvailable bool) *Registry {
 	if !general.Available {
 		general.UnavailableReason = "Custom code execution requires WORKER_MODE=docker and a locally built worker image; plans can still be created and reviewed"
 	}
-	tools = append([]Tool{general}, tools...)
-	return &Registry{tools}
+	multi := general
+	multi.ID = "language.experiment"
+	multi.Name = "Multi-language experiments"
+	multi.Description = "Custom programs in installed worker languages. Programs read one JSON object with inputs, dataset_rows and seed from stdin and print one JSON result to stdout."
+	multi.Dependencies = []string{"Isolated Docker worker", "Installed language runtime"}
+	multi.AvailableModules = nil
+	multi.Outputs = []string{"experiment source", "results.json", "data.csv", "chart.svg", "report.md"}
+	tools = append([]Tool{general, multi}, tools...)
+	return &Registry{tools: tools}
 }
 func (r *Registry) Tools() []Tool { return r.tools }
 func (r *Registry) Lookup(id string) (Tool, bool) {
@@ -124,8 +134,14 @@ func (r *Registry) Validate(p Plan, requireAvailable bool) error {
 	if requireAvailable && !t.Available {
 		return fmt.Errorf("adapter unavailable: %s", t.UnavailableReason)
 	}
-	if p.Adapter != "python.experiment" && p.Domain != t.Domain {
+	if !isCustomAdapter(p.Adapter) && p.Domain != t.Domain {
 		return fmt.Errorf("domain must be %q for this adapter", t.Domain)
+	}
+	if len(p.LanguageReason) > 2000 {
+		return fmt.Errorf("language_reason must be at most 2000 characters")
+	}
+	if !isCustomAdapter(p.Adapter) && p.Language != "" && normalizeLanguage(p.Language) != "python" {
+		return fmt.Errorf("this fixed adapter uses Python")
 	}
 	if strings.TrimSpace(p.ResearchQuestion) == "" || strings.TrimSpace(p.Hypothesis) == "" || strings.TrimSpace(p.Methodology) == "" {
 		return fmt.Errorf("research_question, hypothesis, and methodology are required")
@@ -142,11 +158,11 @@ func (r *Registry) Validate(p Plan, requireAvailable bool) error {
 	if strings.TrimSpace(p.Domain) == "" || len(p.Domain) > 80 {
 		return fmt.Errorf("domain is required (max 80 characters)")
 	}
-	if p.Adapter != "python.experiment" && p.Code != "" {
-		return fmt.Errorf("custom code requires the python.experiment adapter")
+	if !isCustomAdapter(p.Adapter) && p.Code != "" {
+		return fmt.Errorf("custom code requires a custom experiment adapter")
 	}
 	switch p.Adapter {
-	case "python.experiment":
+	case "python.experiment", "language.experiment":
 		var c GeneralParams
 		if err := strictJSON(p.Parameters, &c); err != nil {
 			return fmt.Errorf("general experiment parameters: %w", err)
@@ -155,10 +171,28 @@ func (r *Registry) Validate(p Plan, requireAvailable bool) error {
 			return fmt.Errorf("general parameters require inputs (object), a nonnegative safe-integer seed, and up to 32 required_modules")
 		}
 		if strings.TrimSpace(p.Code) == "" || len(p.Code) > 64000 || strings.ContainsRune(p.Code, 0) {
-			return fmt.Errorf("general experiments require Python code (1–64000 bytes) defining run_experiment(inputs, dataset_rows)")
+			return fmt.Errorf("general experiments require source code (1–64000 bytes)")
+		}
+		if p.Adapter == "python.experiment" && p.Language != "" && normalizeLanguage(p.Language) != "python" {
+			return fmt.Errorf("python.experiment requires language python")
+		}
+		if p.Adapter == "language.experiment" {
+			if !validLanguage(p.Language) || normalizeLanguage(p.Language) == "auto" || normalizeLanguage(p.Language) == "python" {
+				return fmt.Errorf("language.experiment requires an explicit non-Python language")
+			}
+			found := false
+			for _, language := range r.Languages() {
+				if language.ID == normalizeLanguage(p.Language) {
+					found = language.Available
+					t.AvailableModules = language.Modules
+				}
+			}
+			if requireAvailable && !found {
+				return fmt.Errorf("language %q is not installed in the worker image; rebuild the worker with this runtime", p.Language)
+			}
 		}
 		for _, name := range c.RequiredModules {
-			if !moduleName.MatchString(name) {
+			if (p.Adapter == "python.experiment" && !moduleName.MatchString(name)) || len(name) == 0 || len(name) > 100 || strings.ContainsAny(name, "\x00\n\r") {
 				return fmt.Errorf("invalid module name %q", name)
 			}
 			found := false
@@ -257,3 +291,5 @@ func (r *Registry) SetAvailableModules(modules []string) {
 		}
 	}
 }
+
+func isCustomAdapter(id string) bool { return id == "python.experiment" || id == "language.experiment" }

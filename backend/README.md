@@ -1,6 +1,6 @@
-# Kario backend
+# Kairo backend
 
-A Go API for general computational research, backed by PostgreSQL and isolated Python workers. It powers the React dashboard through the local Vite proxy.
+A Go API for general computational research, backed by PostgreSQL and isolated multi-language workers. It powers the React dashboard through the local Vite proxy.
 
 ## Setup
 
@@ -9,8 +9,7 @@ Follow the [root README](../README.md#run-locally) to configure the single root 
 From the project root, start the API with:
 
 ```sh
-cd backend
-go run -buildvcs=false ./cmd/server
+npm run dev:api
 ```
 
 The default listener is `127.0.0.1:8080`. `GET /healthz` checks process health. The startup log identifies the loaded env file. Both services use the root `.env`; no backend-specific env file is needed.
@@ -24,8 +23,8 @@ The default listener is `127.0.0.1:8080`. `GET /healthz` checks process health. 
 | Model client | Ollama or OpenAI-compatible planning and evidence interpretation |
 | Registry and validator | Execution capabilities, schemas, dependencies, and resource checks |
 | Background workers | Durable job claiming, progress, deadlines, cancellation, and recovery |
-| Python worker | Scientific computations and structured results |
-| Artifact storage | Source, inputs, results, charts, reports, hashes, and reproduction bundles |
+| Scientific worker | Python, JavaScript, R, Go, and C++ computations and structured results |
+| Artifact storage | Private Cloudflare R2 (or explicit local development mode) for source, inputs, results, datasets, charts, reports, and document evidence |
 
 Use one API process per database and data directory. Multiple worker goroutines are supported inside that process; this is not a distributed queue or multi-user account system.
 
@@ -38,6 +37,8 @@ def run_experiment(inputs, dataset_rows):
     # Compute and return metrics, findings, limitations, and optional plot/CSV data.
     ...
 ```
+
+Other languages use `language.experiment`: set `language`, provide a complete executable program in `code`, read JSON `{inputs, dataset_rows, seed}` from stdin, and print one result object to stdout. `GET /api/v1/languages` exposes detected runtimes and installed modules. `language: "auto"` on experiment creation lets the agent choose; an explicit language is enforced. Plans include `language_reason`. Add libraries in the worker Dockerfile/requirements file; add further runtimes in `internal/research/runtimes.json` and rebuild.
 
 The method is shaped around the actual question. The planner does not substitute one of the examples for an unrelated study. See [GENERAL_EXPERIMENTS.md](GENERAL_EXPERIMENTS.md) for the full contract and [custom-plan.json](examples/custom-plan.json) for a biology study.
 
@@ -62,7 +63,7 @@ Custom code runs only in Docker. The API supplies no host mounts, backend creden
 A successful attempt saves:
 
 - `plan.json` and `input.json`: reviewed method, parameters, and selected data.
-- `worker.py` and, for custom studies, `experiment.py`: exact execution source.
+- `worker.py` and, for custom studies, `experiment.py`, `.js`, `.R`, `.go`, or `.cpp`: exact execution source.
 - `results.json`, `data.csv`, `chart.svg`, and `report.md`: computed evidence and explanations.
 - `provenance.json`, `requirements.txt`, and `checksums.json`: runtime versions, dependency information, seeds, and hashes.
 - `REPRODUCE.md`: instructions for rerunning the study.
@@ -104,3 +105,7 @@ Database tests create and drop isolated schemas. They use `TEST_DATABASE_URL` fr
 ## ElevenLabs voice
 
 The existing Go server also exposes `POST /api/v1/voice/session`. It reads `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID` from the shared root `.env` and returns a temporary authenticated WebSocket URL to React. It never sends the API key to the browser. The voice agent discusses the selected experiment and proposes questions; experiment persistence and execution still use the existing review flow. See the [voice setup](../README.md#research-voice-companion).
+
+## Object storage
+
+Configure `R2_ENDPOINT` (account origin only), `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` in the single root `.env`. `STORAGE_BACKEND=r2` selects the S3-compatible backend with region `auto`; no local artifact fallback occurs. New document source and evidence are stored as objects, while Postgres retains metadata. See the [root migration instructions](../README.md#store-research-artifacts-in-cloudflare-r2) for moving existing research and deleting verified local copies.

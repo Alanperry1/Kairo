@@ -9,7 +9,10 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:integration": "node scripts/integration.mjs"
+    "test:integration": "node scripts/integration.mjs",
+    "dev:api": "node scripts/run-backend.mjs",
+    "build:api": "node scripts/run-backend.mjs --build",
+    "migrate:storage": "node scripts/run-backend.mjs --migrate-storage"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.75.0",

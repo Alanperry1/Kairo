@@ -8,7 +8,7 @@ function summary(value, depth = 0) {
 }
 export function experimentVoiceContext(experiment) {
   return {
-    view: 'experiment', id: experiment.id, title: experiment.title,
+    view: 'experiment', language: experiment.plan?.language || experiment.language || 'auto', id: experiment.id, title: experiment.title,
     question: experiment.question, status: experiment.status, progress: experiment.progress,
     method: experiment.plan ? summary({ hypothesis: experiment.plan.hypothesis, methodology: experiment.plan.methodology, parameters: experiment.plan.parameters, assumptions: experiment.plan.assumptions, limitations: experiment.plan.limitations }) : null,
     results: experiment.result ? summary({ metrics: experiment.result.metrics, findings: experiment.result.findings, limitations: experiment.result.limitations }) : null,

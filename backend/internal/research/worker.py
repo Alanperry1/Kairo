@@ -1,6 +1,6 @@
 """Kairo trusted adapters. Reads one JSON request from stdin, emits one JSON result.
 Replay: python3 worker.py < input.json > results.json
-No model-generated code is evaluated. Python 3.10+; SciPy only for statistics.welch.
+Custom programs run only inside an isolated worker container.
 """
 import contextlib
 import importlib.util
@@ -15,14 +15,17 @@ import random
 import statistics
 import sys
 import time
+import pathlib
+import shutil
+import subprocess
+import tempfile
 
 # Defense in depth for a fixed, trusted worker. This is not an arbitrary-code sandbox.
 try:
     import resource
     resource.setrlimit(resource.RLIMIT_CPU, (310, 310))
-    resource.setrlimit(resource.RLIMIT_AS, (1024 ** 3, 1024 ** 3))
     resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 ** 2, 16 * 1024 ** 2))
-    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
 except ImportError:
     pass
 
@@ -214,6 +217,19 @@ def custom_experiment(plan, rows):
         if not callable(function):
             raise ValueError('Define run_experiment(inputs, dataset_rows)')
         result = function(config['inputs'], rows)
+    validate_custom_result(result)
+    versions = {}
+    distributions = importlib.metadata.packages_distributions()
+    used = {name.split('.')[0] for name in set(sys.modules)-loaded_before} | set(required)
+    for name in used:
+        for distribution in distributions.get(name, []):
+            versions[distribution] = importlib.metadata.version(distribution)
+    result['dependencies'] = versions
+    result['limitations'].append('Custom experiment code requires methodological review; execution validates implemented computations, not the scientific truth of the model.')
+    return result
+
+
+def validate_custom_result(result):
     if not isinstance(result, dict):
         raise ValueError('run_experiment must return a result dictionary')
     if result.get('kind') not in ('simulation', 'benchmark', 'observational_analysis', 'computational_experiment'):
@@ -238,14 +254,79 @@ def custom_experiment(plan, rows):
             raise ValueError('Axis labels must be strings of at most 150 characters')
     if not isinstance(result.get('csv', ''), str) or len(result.get('csv', '')) > 8*1024*1024:
         raise ValueError('CSV output must be a string of at most 8 MiB')
-    versions = {}
-    distributions = importlib.metadata.packages_distributions()
-    used = {name.split('.')[0] for name in set(sys.modules)-loaded_before} | set(required)
-    for name in used:
-        for distribution in distributions.get(name, []):
-            versions[distribution] = importlib.metadata.version(distribution)
-    result['dependencies'] = versions
-    result['limitations'].append('Custom experiment code requires methodological review; execution validates implemented computations, not the scientific truth of the model.')
+
+
+def runtime_catalog():
+    # Configuration is part of the image/reproduction bundle, never supplied by a plan.
+    for path in (pathlib.Path('/opt/kairo/runtimes.json'), pathlib.Path('runtimes.json')):
+        if path.exists():
+            return json.loads(path.read_text())
+    return {}
+
+
+def capabilities():
+    modules = set(sys.stdlib_module_names) | set(importlib.metadata.packages_distributions())
+    modules = sorted(name for name in modules if name.isidentifier() and not name.startswith('_') and importlib.util.find_spec(name))
+    languages = [{'id': 'python', 'available': True, 'version': platform.python_version(), 'modules': modules, 'libraries': [name for name in modules if name not in sys.stdlib_module_names], 'extension': 'py'}]
+    for language, spec in runtime_catalog().items():
+        installed = shutil.which(spec['version'][0]) is not None
+        version = ''
+        packages = spec.get('modules', [])
+        if installed:
+            try:
+                version = subprocess.check_output(spec['version'], stderr=subprocess.STDOUT, text=True, timeout=5).strip().split('\n')[0]
+                if language == 'javascript':
+                    raw = subprocess.check_output(['node', '-e', 'console.log(JSON.stringify(require("module").builtinModules))'], text=True, timeout=5)
+                    packages = sorted(set(name.removeprefix('node:') for name in json.loads(raw)))
+                if language == 'go':
+                    packages = subprocess.check_output(['go', 'list', 'std'], text=True, timeout=10).splitlines()
+                if language == 'cpp':
+                    headers = set(packages)
+                    for directory in pathlib.Path('/usr/include/c++').glob('*'):
+                        if directory.is_dir():
+                            headers.update(header.name for header in directory.iterdir() if header.is_file())
+                    packages = sorted(headers)
+                if language == 'r':
+                    raw = subprocess.check_output(['Rscript', '--vanilla', '-e', 'p<-installed.packages();cat(jsonlite::toJSON(as.list(setNames(as.character(p[,"Version"]),p[,"Package"])),auto_unbox=TRUE))'], text=True, timeout=5)
+                    packages = list(json.loads(raw))
+            except (subprocess.SubprocessError, ValueError):
+                installed = False
+        languages.append({'id': language, 'available': installed, 'version': version, 'modules': packages if installed else [], 'libraries': (packages if language == 'r' else (['nlohmann/json.hpp'] if language == 'cpp' else [])) if installed else [], 'extension': spec['extension']})
+    return {'modules': modules, 'languages': languages}
+
+
+def language_experiment(plan, rows):
+    if os.environ.get('KAIRO_ISOLATED_WORKER') != '1':
+        raise ValueError('Custom code requires an isolated Docker worker')
+    language = plan['language']
+    spec = runtime_catalog().get(language)
+    if not spec or not shutil.which(spec['version'][0]):
+        raise ValueError(f'Language {language!r} is not installed in the worker image')
+    config = plan['parameters']
+    # No shell interpolation. All commands come from the image-owned catalog.
+    with tempfile.TemporaryDirectory(prefix='kairo-') as directory:
+        source = pathlib.Path(directory) / ('experiment.' + spec['extension'])
+        source.write_text(plan['code'])
+        binary = pathlib.Path(directory) / 'experiment'
+        def command(values):
+            return [value.replace('{source}', str(source)).replace('{binary}', str(binary)) for value in values]
+        if spec.get('build'):
+            subprocess.run(command(spec['build']), check=True, stdout=sys.stderr, stderr=sys.stderr)
+        payload = json.dumps({'inputs': config['inputs'], 'dataset_rows': rows, 'seed': config['seed']})
+        # Spool stdout to disk: RLIMIT_FSIZE prevents an unbounded allocation.
+        with tempfile.TemporaryFile() as output:
+            subprocess.run(command(spec['run']), input=payload.encode(), check=True, stdout=output, stderr=sys.stderr)
+            output.seek(0)
+            result = json.load(output)
+    validate_custom_result(result)
+    result['language'] = language
+    result['runtime_version'] = subprocess.check_output(spec['version'], stderr=subprocess.STDOUT, text=True, timeout=5).strip().split('\n')[0]
+    result['dependencies'] = {language: result['runtime_version']}
+    if language == 'r':
+        raw = subprocess.check_output(['Rscript', '--vanilla', '-e', 'p<-installed.packages();cat(jsonlite::toJSON(as.list(setNames(as.character(p[,"Version"]),p[,"Package"])),auto_unbox=TRUE))'], text=True, timeout=5)
+        installed = json.loads(raw)
+        result['dependencies'].update({name: installed[name] for name in config.get('required_modules', []) if name in installed})
+    result['limitations'].append('Custom experiment code requires methodological review; execution checks computations, not the scientific truth of the model.')
     return result
 
 
@@ -255,6 +336,8 @@ def main():
     adapter, p = plan['adapter'], plan['parameters']
     if adapter == 'python.experiment':
         result = custom_experiment(plan, rows)
+    elif adapter == 'language.experiment':
+        result = language_experiment(plan, rows)
     elif adapter == 'physics.projectile':
         result = projectile(p)
     elif adapter == 'cs.sorting':
@@ -263,6 +346,8 @@ def main():
         result = welch(p, rows)
     else:
         raise ValueError('Unknown registered adapter')
+    result.setdefault('language', 'python')
+    result.setdefault('runtime_version', platform.python_version())
     result['python_version'] = platform.python_version()
     result.setdefault('dependencies', {})
     result['dependencies']['python'] = platform.python_version()
@@ -272,7 +357,10 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        if "--capabilities" in sys.argv:
+            json.dump(capabilities(), sys.stdout)
+        else:
+            main()
     except Exception as exc:
         print(f'{type(exc).__name__}: {exc}', file=sys.stderr)
         sys.exit(1)

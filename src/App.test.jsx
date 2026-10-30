@@ -32,6 +32,16 @@ function fakeAPI() {
 }
 
 describe('connected dashboard', () => {
+  it('turns a Kairo conversation into a reviewable experiment with the proposed language', async () => {
+    const api=fakeAPI();api.settings.mockResolvedValue({model_provider:'google',voice_enabled:false});
+    api.chat=vi.fn().mockResolvedValue({message:'We can study this with a numerical simulation.',draft:{question:'How does carrying capacity affect simulated population growth?',language:'r'}});
+    render(<App client={api}/>);await screen.findAllByText('API connected');
+    await userEvent.click(screen.getByRole('button',{name:'Kairo',exact:true}));
+    await userEvent.type(screen.getByLabelText('Ask Kairo'),'Help me study population growth');await userEvent.click(screen.getByRole('button',{name:'Send to Kairo'}));
+    await userEvent.click(await screen.findByRole('button',{name:'Review experiment'}));
+    expect(api.createExperiment).not.toHaveBeenCalled();expect(screen.getByLabelText('Research question').value).toContain('carrying capacity');expect(screen.getByLabelText('Experiment language').value).toBe('r');
+    await userEvent.click(screen.getByRole('button',{name:'Create research plan'}));await waitFor(()=>expect(api.createExperiment).toHaveBeenCalledWith({question:'How does carrying capacity affect simulated population growth?',language:'r',project_id:'',dataset_id:''}));
+  });
   it('shows real empty state without seeding local demo experiments', async () => {
     localStorage.setItem('researchos-runs', JSON.stringify([{ id: 'EXP-024', title: 'Old demo' }]));
     render(<App client={fakeAPI()}/>);

@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ConversationProvider, useConversationClientTool, useConversationControls, useConversationInput, useConversationMode, useConversationStatus } from '@elevenlabs/react';
-import { ArrowUp, Check, LoaderCircle, Mic, MicOff, Square } from 'lucide-react';
+import { ArrowDownToLine, ArrowUp, BookOpen, Check, LoaderCircle, Mic, MicOff, Square } from 'lucide-react';
+import { saveDownload } from '../api';
+import QuestionChoices, { validQuestion } from './QuestionChoices';
 
-function VoiceSession({ api, context, onQuestion, available, messages, error, setError, resetMessages, autoStart = false }) {
+function VoiceSession({ api, context, onQuestion, onDocumentCreated, available, messages, error, setError, resetMessages, autoStart = false }) {
   const { startSession, endSession, sendContextualUpdate, sendUserMessage } = useConversationControls();
   const { status } = useConversationStatus();
   const { isSpeaking } = useConversationMode();
@@ -10,6 +12,12 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
   const [preparing, setPreparing] = useState(false);
   const [message, setMessage] = useState('');
   const [proposal, setProposal] = useState('');
+  const [interactiveQuestion, setInteractiveQuestion] = useState(null);
+  const choiceSent = useRef(false);
+  const [documentPending, setDocumentPending] = useState('');
+  const [generatedDocument, setGeneratedDocument] = useState(null);
+  const [downloadingDocument, setDownloadingDocument] = useState(false);
+  const writingRequest = useRef(null);
   const generation = useRef(0);
   const pending = useRef(null);
   const transcript = useRef(null);
@@ -19,6 +27,23 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
   const busy = preparing || status === 'connecting';
 
   useConversationClientTool('get_experiment_context', () => contextText);
+  useConversationClientTool('ask_research_question', ({ question, options }) => {
+    const followUp = { prompt: question, options };
+    if (!validQuestion(followUp)) return JSON.stringify({ error: 'Ask one question with 2–5 distinct options, each at most 160 characters.' });
+    choiceSent.current = false; setInteractiveQuestion(followUp);
+    return JSON.stringify({ displayed: true, awaiting_user_answer: true, message: 'The choices are visible. Ask this question aloud, then wait. This tool result is not an answer. The user may click an option, type, or speak.' });
+  });
+  function answerQuestion(option) {
+    if (!connected || choiceSent.current || !interactiveQuestion) return;
+    try {
+      sendUserMessage(`For your question "${interactiveQuestion.prompt}", I choose: ${option}`);
+      choiceSent.current = true; setInteractiveQuestion((current) => ({ ...current, answer: option }));
+    } catch { setError('Could not send your choice. Try again while the conversation is connected.'); }
+  }
+  useEffect(() => {
+    const last = messages.at(-1);
+    if (last?.role === 'user') setInteractiveQuestion((current) => current && !current.answer ? { ...current, answer: last.text.slice(0, 160) } : current);
+  }, [messages]);
   useConversationClientTool('set_research_question', ({ question }) => {
     if (typeof question !== 'string' || question.trim().length < 5 || question.trim().length > 4000) return JSON.stringify({ error: 'The question must be 5–4000 characters.' });
     if (!onQuestion) return JSON.stringify({ error: 'This view does not accept a new question.' });
@@ -26,9 +51,47 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
     return JSON.stringify({ draft_ready: true, requires_user_review: true, message: 'The question is displayed for review. The user must click Use question to apply it; nothing has been saved or run.' });
   });
 
+  useConversationClientTool('get_research_capabilities', async () => {
+    try { return JSON.stringify(await api.languages()); }
+    catch (failure) { return JSON.stringify({ error: failure.message }); }
+  });
+  useConversationClientTool('get_completed_experiments', async () => {
+    try {
+      const result = await api.listExperiments({ status: 'completed', limit: 20 });
+      return JSON.stringify({ experiments: result.data.map(({ id, title, question }) => ({ id, title, question })) });
+    } catch (failure) { return JSON.stringify({ error: failure.message }); }
+  });
+  useConversationClientTool('generate_research_document', async ({ kind, experiment_id, include_figures }) => {
+    if (!['report', 'manuscript'].includes(kind)) return JSON.stringify({ error: 'Choose report or manuscript.' });
+    const id = experiment_id || context?.id;
+    if (typeof id !== 'string' || !/^exp_[a-zA-Z0-9]+$/.test(id)) return JSON.stringify({ error: 'Choose a completed experiment first. Use get_completed_experiments to find one.' });
+    if (writingRequest.current) return JSON.stringify({ error: 'A document is already being drafted. Wait for it to finish.' });
+    const controller = new AbortController(); writingRequest.current = controller;
+    setDocumentPending(kind); setError('');
+    try {
+      const document = await (include_figures === false ? api.generateDocument(id, kind, controller.signal, { include_figures: false }) : api.generateDocument(id, kind, controller.signal));
+      if (controller.signal.aborted) return JSON.stringify({ error: 'Document request was canceled.' });
+      setGeneratedDocument(document);
+      return JSON.stringify({ saved: true, id: document.id, kind: document.kind, title: document.title, figures: document.figures?.length || 0, message: 'The saved draft is available in the voice panel and document library. The user can open or download it. It requires scientific review.' });
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(failure.message);
+      return JSON.stringify({ error: controller.signal.aborted ? 'Document request was canceled.' : failure.message });
+    } finally {
+      if (writingRequest.current === controller) writingRequest.current = null;
+      if (!controller.signal.aborted) setDocumentPending('');
+    }
+  });
+  async function downloadGeneratedDocument() {
+    if (!generatedDocument) return; setDownloadingDocument(true); setError('');
+    try { saveDownload(await api.downloadDocument(generatedDocument.id), `${generatedDocument.id}.${generatedDocument.kind === 'manuscript' ? 'tex' : 'md'}`); }
+    catch (failure) { setError(failure.message); }
+    finally { setDownloadingDocument(false); }
+  }
+
   useEffect(() => () => {
     generation.current++;
     pending.current?.abort();
+    writingRequest.current?.abort();
     endSession();
   }, [endSession]);
   useEffect(() => {
@@ -51,7 +114,7 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
     const attempt = ++generation.current;
     const controller = new AbortController();
     pending.current = controller;
-    setPreparing(true); setError(''); setProposal(''); resetMessages();
+    setPreparing(true); setError(''); setProposal(''); setInteractiveQuestion(null); choiceSent.current = false; resetMessages();
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access needs HTTPS or localhost and a supported browser.');
       // Ask permission after an explicit Start click or an opted-in wake phrase, and release this probe stream.
@@ -88,7 +151,10 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
     {available === false && <p className="voice-agent-error">Voice is unavailable. Check the ElevenLabs connection in workspace settings.</p>}
     {error && <p className="voice-agent-error" role="alert">{error}</p>}
     {messages.length > 0 && <ol ref={transcript} className="voice-agent-transcript" aria-label="Conversation transcript" aria-live="polite" aria-relevant="additions">{messages.map((item) => <li className={item.role} key={item.id}><strong>{item.role === 'user' ? 'You' : 'Kairo'}</strong><p>{item.text}</p></li>)}</ol>}
+    {interactiveQuestion && <QuestionChoices question={interactiveQuestion} answer={interactiveQuestion.answer} disabled={!connected} onAnswer={answerQuestion}/>}
     {proposal && <div className="voice-agent-proposal"><span>YOUR RESEARCH QUESTION</span><p>{proposal}</p><button className="button secondary" type="button" onClick={() => { onQuestion(proposal); setProposal(''); }}><Check size={13}/>Use question</button></div>}
+    {documentPending && <p className="voice-writing-status" role="status"><LoaderCircle className="spinning" size={13}/>Drafting your {documentPending}…</p>}
+    {generatedDocument && <div className="voice-generated-document"><strong>{generatedDocument.title}</strong><p>{generatedDocument.kind === 'manuscript' ? 'LaTeX manuscript draft' : 'Research report draft'} · saved to your library</p><div>{onDocumentCreated && <button type="button" className="button secondary" onClick={() => onDocumentCreated(generatedDocument)}><BookOpen size={13}/>Open draft</button>}<button type="button" className="button secondary" disabled={downloadingDocument} onClick={downloadGeneratedDocument}><ArrowDownToLine size={13}/>Download {generatedDocument.kind === 'manuscript' ? '.tex' : '.md'}</button></div></div>}
     {connected && <div className="voice-agent-message"><input aria-label="Message Kairo" value={message} maxLength={4000} placeholder="Or type a message…" onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); send(); } }}/><button type="button" className="icon-button" aria-label="Send message to Kairo" disabled={!message.trim()} onClick={send}><ArrowUp size={16}/></button></div>}
     <div className="voice-agent-controls">{connected || busy ? <><button type="button" className="button secondary" onClick={stop}><Square size={12}/>End conversation</button>{connected && <button type="button" className="button secondary" aria-label={isMuted ? 'Unmute microphone' : 'Mute microphone'} aria-pressed={isMuted} onClick={() => setMuted(!isMuted)}>{isMuted ? <MicOff size={14}/> : <Mic size={14}/>}<span>{isMuted ? 'Unmute' : 'Mute'}</span></button>}</> : <button type="button" className="button primary" disabled={available === false} onClick={start}><Mic size={14}/>Start conversation</button>}{busy && <LoaderCircle className="spinning" size={14}/>}</div>
     <p className="voice-agent-note">Your microphone and this experiment’s context are shared with ElevenLabs during the conversation. Review any proposed question before using it.</p>

@@ -14,6 +14,7 @@ import (
 )
 
 type Config struct {
+	StorageBackend, R2Endpoint, R2Bucket, R2AccessKey, R2SecretKey                                      string
 	ElevenLabsAPIKey, ElevenLabsAgentID                                                                 string
 	Addr, DataDir, Token, ModelProvider, ModelURL, ModelName, ModelKey, Python, WorkerMode, WorkerImage string
 	EnvFile                                                                                             string
@@ -39,6 +40,19 @@ func LoadConfig() (Config, error) {
 	}
 	c := Config{Addr: env("ADDR", "127.0.0.1:8080"), DataDir: env("DATA_DIR", "./data"), Token: os.Getenv("API_TOKEN"), ModelProvider: env("MODEL_PROVIDER", "ollama"), ModelURL: env("MODEL_URL", "http://127.0.0.1:11434"), ModelName: env("MODEL_NAME", "qwen3:8b"), ModelKey: os.Getenv("MODEL_API_KEY"), Python: env("PYTHON_BIN", "python3"), WorkerMode: env("WORKER_MODE", "local"), WorkerImage: env("WORKER_IMAGE", "researchos-worker:local"), Workers: 1}
 	c.EnvFile = envFile
+	c.StorageBackend = env("STORAGE_BACKEND", "local")
+	c.R2Endpoint = strings.TrimRight(os.Getenv("R2_ENDPOINT"), "/")
+	c.R2Bucket = os.Getenv("R2_BUCKET")
+	c.R2AccessKey = os.Getenv("R2_ACCESS_KEY_ID")
+	c.R2SecretKey = os.Getenv("R2_SECRET_ACCESS_KEY")
+	if c.StorageBackend != "local" && c.StorageBackend != "r2" {
+		return c, fmt.Errorf("STORAGE_BACKEND must be local or r2")
+	}
+	if c.StorageBackend == "r2" {
+		if err := validateR2Config(c); err != nil {
+			return c, err
+		}
+	}
 	c.ElevenLabsAPIKey = os.Getenv("ELEVENLABS_API_KEY")
 	c.ElevenLabsAgentID = os.Getenv("ELEVENLABS_AGENT_ID")
 	c.DatabaseURL = os.Getenv("DATABASE_URL")
@@ -78,8 +92,8 @@ func LoadConfig() (Config, error) {
 	if c.Token != "" && len(c.Token) < 24 {
 		return c, fmt.Errorf("API_TOKEN must contain at least 24 characters")
 	}
-	if c.ModelProvider != "ollama" && c.ModelProvider != "compatible" && c.ModelProvider != "disabled" {
-		return c, fmt.Errorf("MODEL_PROVIDER must be ollama, compatible, or disabled")
+	if c.ModelProvider != "ollama" && c.ModelProvider != "compatible" && c.ModelProvider != "google" && c.ModelProvider != "disabled" {
+		return c, fmt.Errorf("MODEL_PROVIDER must be ollama, compatible, google, or disabled")
 	}
 	if c.ModelProvider != "disabled" {
 		u, err := url.Parse(c.ModelURL)

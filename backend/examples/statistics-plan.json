@@ -1,0 +1,14 @@
+{
+  "research_question": "Do the two groups have different mean values?",
+  "domain": "statistics",
+  "hypothesis": "The population means of groups A and B differ.",
+  "adapter": "statistics.welch",
+  "methodology": "Pre-specify a two-sided Welch t-test at alpha 0.05, report the raw mean difference (A minus B) and 95% confidence interval. Inspect normality diagnostics descriptively without selecting a test based on their p-values.",
+  "independent_variables": ["group"],
+  "dependent_variables": ["value"],
+  "controlled_variables": ["measurement_units", "sampling_protocol"],
+  "assumptions": ["Observations are independent, measured on the same scale, and sampling supports the intended inference.", "The included sample dataset is synthetic and illustrative."],
+  "limitations": ["An observational group comparison does not establish causality.", "Small samples, skewness, outliers, and multiple testing require human review."],
+  "parameters": {"group_column": "group", "value_column": "value", "group_a": "A", "group_b": "B", "alpha": 0.05},
+  "timeout_seconds": 120
+}

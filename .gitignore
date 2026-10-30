@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.vite/
+backend/data/
+backend/researchos
+backend/.env
+backend/coverage.out
+__pycache__/
+backend/.venv/
+.env
+.env.local
+.env.*.local
+coverage/
+.env*
+.neon

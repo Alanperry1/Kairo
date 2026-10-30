@@ -1,0 +1,14 @@
+{
+  "research_question": "How does air resistance affect projectile range?",
+  "domain": "physics",
+  "hypothesis": "Under the specified quadratic-drag model, increasing drag reduces projectile range.",
+  "adapter": "physics.projectile",
+  "methodology": "Numerically integrate the same initial launch with RK4 for three drag coefficients, including a no-drag control. Compare ranges, check the no-drag analytical solution, and repeat integration at half the time step as a numerical diagnostic.",
+  "independent_variables": ["drag_coefficient"],
+  "dependent_variables": ["range_m", "flight_time_s"],
+  "controlled_variables": ["launch_speed", "launch_angle", "gravity", "mass", "cross_sectional_area", "air_density"],
+  "assumptions": ["All parameter values are illustrative assumptions, not measured data.", "Flat ground, equal launch and impact heights, constant air density, no wind or spin."],
+  "limitations": ["This tests a numerical model, not a physical hypothesis in the laboratory.", "Deterministic integrations are not independent experimental replications."],
+  "parameters": {"velocity_m_s": 30, "angle_degrees": 45, "gravity_m_s2": 9.81, "mass_kg": 1, "area_m2": 0.01, "air_density_kg_m3": 1.225, "drag_coefficients": [0, 0.2, 0.5], "time_step_s": 0.01, "max_time_s": 30},
+  "timeout_seconds": 120
+}

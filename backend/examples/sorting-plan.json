@@ -1,0 +1,14 @@
+{
+  "research_question": "Which sorting implementation is faster across different input sizes?",
+  "domain": "computer_science",
+  "hypothesis": "Python built-in sorted will have lower median runtime than these teaching implementations on the specified random inputs.",
+  "adapter": "cs.sorting",
+  "methodology": "Compare insertion sort, merge sort and built-in sorted on paired random integer inputs. Randomize algorithm order, check every result against a reference, and report repeated-trial timing distributions.",
+  "independent_variables": ["algorithm", "input_size"],
+  "dependent_variables": ["elapsed_ms"],
+  "controlled_variables": ["input_values_per_trial", "seed", "Python_runtime", "machine"],
+  "assumptions": ["Uniform random integer inputs are an illustrative workload, not representative of all applications."],
+  "limitations": ["Timings depend on the machine and background activity.", "Built-in sorted and pure-Python implementations differ in implementation language as well as algorithm."],
+  "parameters": {"sizes": [100, 500, 1000], "trials": 5, "seed": 42},
+  "timeout_seconds": 120
+}

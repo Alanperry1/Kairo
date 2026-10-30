@@ -1,0 +1,2 @@
+# Only the statistics.welch adapter needs this. Physics and sorting use Python's standard library.
+scipy==1.15.3

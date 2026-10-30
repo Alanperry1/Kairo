@@ -1,0 +1,9 @@
+data/
+.venv/
+.env*
+researchos
+coverage.out
+__pycache__/
+*.db
+*.db-wal
+*.db-shm

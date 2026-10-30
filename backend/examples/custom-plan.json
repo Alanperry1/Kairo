@@ -1,0 +1,44 @@
+{
+  "research_question": "How does carrying capacity affect population growth in a logistic model?",
+  "domain": "biology",
+  "hypothesis": "Under the illustrative logistic model, larger carrying capacity allows a larger long-run population.",
+  "adapter": "python.experiment",
+  "methodology": "Compare exact logistic growth curves at two carrying capacities, holding growth rate and initial population constant. Verify the initial condition and bounded positive populations. This is a deterministic model exploration, not observed biological evidence.",
+  "independent_variables": [
+    "carrying_capacity"
+  ],
+  "dependent_variables": [
+    "population_over_time"
+  ],
+  "controlled_variables": [
+    "initial_population",
+    "growth_rate",
+    "time_grid"
+  ],
+  "assumptions": [
+    "All numerical values are illustrative model assumptions.",
+    "Growth is logistic with constant growth rate, no migration, and a fixed carrying capacity in each condition."
+  ],
+  "limitations": [
+    "A numerical population model does not validate its ecological assumptions.",
+    "These are deterministic curves, not independent experimental replications."
+  ],
+  "parameters": {
+    "inputs": {
+      "initial_population": 10,
+      "growth_rate": 0.3,
+      "capacities": [
+        100,
+        200
+      ],
+      "duration": 30,
+      "steps": 120
+    },
+    "seed": 42,
+    "required_modules": [
+      "math"
+    ]
+  },
+  "code": "import math\n\ndef run_experiment(inputs, dataset_rows):\n    n0 = float(inputs[\"initial_population\"])\n    rate = float(inputs[\"growth_rate\"])\n    capacities = [float(k) for k in inputs[\"capacities\"]]\n    duration, steps = float(inputs[\"duration\"]), int(inputs[\"steps\"])\n    if not (n0 > 0 and rate > 0 and 0 < duration <= 1000 and 1 <= steps <= 1000):\n        raise ValueError(\"Invalid model parameters\")\n    if not capacities or len(capacities) > 8 or any(k <= n0 for k in capacities):\n        raise ValueError(\"Each carrying capacity must exceed the initial population\")\n    series, metrics = [], {}\n    rows = [\"carrying_capacity,time,population\"]\n    for capacity in capacities:\n        points = []\n        for i in range(steps + 1):\n            time = duration * i / steps\n            population = capacity / (1 + (capacity/n0 - 1) * math.exp(-rate*time))\n            if not (0 < population <= capacity):\n                raise ValueError(\"Population bounds check failed\")\n            points.append({\"x\":time,\"y\":population})\n            rows.append(f\"{capacity},{time},{population}\")\n        if abs(points[0][\"y\"]-n0) > 1e-9:\n            raise ValueError(\"Initial condition check failed\")\n        series.append({\"name\":f\"K={capacity:g}\",\"points\":points})\n        metrics[f\"K={capacity:g}\"] = {\"final_population\":points[-1][\"y\"],\"initial_condition_checked\":True}\n    return {\"kind\":\"simulation\",\"metrics\":metrics,\"findings\":[f\"{name}: population at t={duration:g} is {value['final_population']:.5g}.\" for name,value in metrics.items()],\"limitations\":[\"Illustrative exact logistic model; no observed data were used.\"],\"series\":series,\"x_axis_label\":\"Time (illustrative time units)\",\"y_axis_label\":\"Population (individuals)\",\"csv\":\"\\n\".join(rows)}\n",
+  "timeout_seconds": 120
+}

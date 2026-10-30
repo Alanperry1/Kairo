@@ -13,3 +13,7 @@ backend/.venv/
 coverage/
 .env*
 .neon
+
+# Private presentation authoring and previews
+.presentation-build/
+*.pptx

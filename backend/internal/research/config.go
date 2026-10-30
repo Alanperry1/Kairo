@@ -14,6 +14,7 @@ import (
 )
 
 type Config struct {
+	ElevenLabsAPIKey, ElevenLabsAgentID                                                                 string
 	Addr, DataDir, Token, ModelProvider, ModelURL, ModelName, ModelKey, Python, WorkerMode, WorkerImage string
 	EnvFile                                                                                             string
 	DatabaseURL                                                                                         string
@@ -38,6 +39,8 @@ func LoadConfig() (Config, error) {
 	}
 	c := Config{Addr: env("ADDR", "127.0.0.1:8080"), DataDir: env("DATA_DIR", "./data"), Token: os.Getenv("API_TOKEN"), ModelProvider: env("MODEL_PROVIDER", "ollama"), ModelURL: env("MODEL_URL", "http://127.0.0.1:11434"), ModelName: env("MODEL_NAME", "qwen3:8b"), ModelKey: os.Getenv("MODEL_API_KEY"), Python: env("PYTHON_BIN", "python3"), WorkerMode: env("WORKER_MODE", "local"), WorkerImage: env("WORKER_IMAGE", "researchos-worker:local"), Workers: 1}
 	c.EnvFile = envFile
+	c.ElevenLabsAPIKey = os.Getenv("ELEVENLABS_API_KEY")
+	c.ElevenLabsAgentID = os.Getenv("ELEVENLABS_AGENT_ID")
 	c.DatabaseURL = os.Getenv("DATABASE_URL")
 	c.DatabaseURLUnpooled = env("DATABASE_URL_UNPOOLED", c.DatabaseURL)
 	if err := validateDatabaseURL(c.DatabaseURL); err != nil {

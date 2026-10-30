@@ -71,8 +71,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/reports", s.reports)
 	mux.HandleFunc("GET /api/v1/dashboard", s.dashboard)
 	mux.HandleFunc("GET /api/v1/activity", s.activity)
+	mux.HandleFunc("POST /api/v1/voice/session", s.voiceSession)
 	mux.HandleFunc("GET /api/v1/settings", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, 200, map[string]any{"model_provider": s.Config.ModelProvider, "model_name": s.Config.ModelName, "model_connectivity": "not_checked", "worker_mode": s.Config.WorkerMode, "workers": s.Config.Workers, "api_auth_enabled": s.Config.Token != "", "supported_adapters": s.Registry.Tools()})
+		respond(w, 200, map[string]any{"model_provider": s.Config.ModelProvider, "model_name": s.Config.ModelName, "model_connectivity": "not_checked", "worker_mode": s.Config.WorkerMode, "workers": s.Config.Workers, "api_auth_enabled": s.Config.Token != "", "voice_enabled": s.Config.ElevenLabsAPIKey != "" && s.Config.ElevenLabsAgentID != "", "supported_adapters": s.Registry.Tools()})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { apiError(w, 404, "not_found", "API route not found") })
 	return s.middleware(mux)

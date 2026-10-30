@@ -100,3 +100,7 @@ Tests cover custom scientific domains, Docker-only execution, installed dependen
 For an optional direct API smoke test, run `python3 examples/smoke.py` from this directory with the API already running. This script reads `API_TOKEN` and `API_BASE_URL` from its process environment, not from `.env`; pass a token when API authentication is enabled. The root `npm run test:integration` uses the authenticated Vite proxy instead.
 
 Database tests create and drop isolated schemas. They use `TEST_DATABASE_URL` from the shell or root `.env`; use a separate remote test database or Neon branch with a direct connection. Without it, database tests are skipped. See the [SQLite migration instructions](../README.md#moving-existing-sqlite-records) to preserve old records.
+
+## ElevenLabs voice
+
+The existing Go server also exposes `POST /api/v1/voice/session`. It reads `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID` from the shared root `.env` and returns a temporary authenticated WebSocket URL to React. It never sends the API key to the browser. The voice agent discusses the selected experiment and proposes questions; experiment persistence and execution still use the existing review flow. See the [voice setup](../README.md#research-voice-companion).

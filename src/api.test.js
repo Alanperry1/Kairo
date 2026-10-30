@@ -16,6 +16,13 @@ describe('Go API transport', () => {
     await api.settings();
     expect(fetcher.mock.calls[1][1].headers.Authorization).toBe('Bearer second-token');
   });
+  it('requests an authenticated temporary voice session with cancellation', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ signed_url: 'wss://api.elevenlabs.io/v1/convai/conversation?token=temporary' }));
+    const controller = new AbortController();
+    await createAPI({ getToken: () => 'workspace-token', fetcher }).startVoiceSession(controller.signal);
+    expect(fetcher.mock.calls[0][0]).toBe('/api/v1/voice/session');
+    expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'POST', signal: controller.signal, headers: { Authorization: 'Bearer workspace-token' } });
+  });
   it('sends JSON and exposes backend validation errors without pretending success', async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ error: { code: 'invalid_plan', message: 'Include a zero-drag control' } }, 422));
     const api = createAPI({ fetcher });

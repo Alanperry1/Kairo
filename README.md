@@ -13,7 +13,7 @@ Start with your own research question. Review the proposed method and code, run 
 - **Evidence and reproduction:** view findings, plots, limitations, and downloadable code, data, reports, and reproduction instructions.
 - **Research management:** organize projects, upload CSV datasets, track progress, cancel runs, and review plan history.
 
-The homepage includes a sliding **Design → Execute → Evaluate** preview and an ElevenLabs voice-agent section. The microphone plays a short greeting using browser speech synthesis. **Live voice conversations are not connected yet.**
+The homepage includes a sliding **Design → Execute → Evaluate** preview. In the experiment workspace, **Talk to Kairo** starts an ElevenLabs conversation powered by an open-weight Qwen model. Discuss the current method or findings, and apply a research-question draft after reviewing it. The homepage microphone remains a short browser greeting.
 
 ## Run locally
 
@@ -55,6 +55,10 @@ WORKER_IMAGE=researchos-worker:local
 WORKERS=1
 PYTHON_BIN=python3
 CORS_ORIGINS=
+
+# Live research conversations (server only)
+ELEVENLABS_API_KEY=
+ELEVENLABS_AGENT_ID=
 ```
 
 No `export` or `source` command is needed. Shell variables override the file. Relative data and worker paths resolve against the root `.env` directory. Restart both services after changing configuration.
@@ -145,6 +149,24 @@ Restart the backend after changing these values.
 You can also enter a question on the homepage and select **Plan my experiment**. It transfers to the custom experiment form through temporary tab-local storage; the question is not added to the URL.
 
 A separate biology study is provided in [custom-plan.json](backend/examples/custom-plan.json). See the [general experiment contract](backend/GENERAL_EXPERIMENTS.md) to write your own plan and result-producing code.
+
+## Research voice companion
+
+Select **Talk to Kairo** on the Experiments page, in a new-experiment form, or in an experiment’s detail panel. Select **Start conversation** and allow microphone access. The panel shows the conversation transcript, listening/speaking state, mute and end controls, and a typed-message option. Closing the panel or leaving its view ends the session.
+
+The agent can read the current question, saved method, status, and bounded findings/metrics. Uploaded dataset rows, API tokens, and database credentials are not included. Audio and the selected experiment context are sent to ElevenLabs only when you start a conversation. The conversation history shown in the panel is kept in memory; ElevenLabs may retain conversation data under your account settings.
+
+The `set_research_question` tool proposes a question; select **Use question** to apply it. On the list or an existing experiment, this opens a new draft form; in the new-experiment form, it fills the question field. It does not save, generate a plan, or start execution. Review the method and start runs using the normal workspace controls.
+
+Credentials live in the single root `.env`. To connect another account, run ElevenLabs onboarding, then keep `ELEVENLABS_API_KEY` in the root `.env`. To create a new Kairo agent from the versioned configuration:
+
+```sh
+node --env-file=.env scripts/setup-voice-agent.mjs
+```
+
+The script reuses an existing `ELEVENLABS_AGENT_ID` and creates an agent only if the ID is empty. [config/voice-agent.mjs](config/voice-agent.mjs) defines its greeting, Qwen model, voice, instructions, and client tools. Change the remote agent configuration in ElevenLabs when updating an existing agent. Restart the Go API after changing credentials.
+
+The Go endpoint `POST /api/v1/voice/session` exchanges the private key for a temporary WebSocket URL using the workspace’s existing authentication. The React SDK is loaded only when you open the voice panel. Use HTTPS or localhost for microphone access. Voice setup is independent of the experiment-planning model: `MODEL_PROVIDER=disabled` still permits voice discussions and saved questions, but does not enable AI plan generation.
 
 ## Moving existing SQLite records
 

@@ -57,6 +57,7 @@ export function createAPI({ baseURL = '/api/v1', getToken = () => '', fetcher = 
     plans: (id, signal) => request(`${item(id)}/plans`, { signal }),
     artifacts: (id, signal) => request(`${item(id)}/artifacts`, { signal }),
     dashboard: (signal) => request('/dashboard', { signal }),
+    startVoiceSession: (signal) => request('/voice/session', { method: 'POST', signal }),
     settings: (signal) => request('/settings', { signal }),
     projects: (signal) => request('/projects', { signal }),
     createProject: (body) => request('/projects', { method: 'POST', body }),

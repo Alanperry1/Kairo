@@ -105,3 +105,9 @@ Reports are Markdown, plots are SVG, downloadable results are JSON/CSV. PDF rend
 The examples do not limit supported scientific domains. Use `adapter: "python.experiment"` with any nonempty domain, `code` containing `run_experiment(inputs, dataset_rows)`, and parameters `{ "inputs": {...}, "seed": 42, "required_modules": ["math"] }`. The remaining Plan fields are unchanged. See `examples/custom-plan.json` for a full biology plan.
 
 Manual/general plans can be saved before Docker is available. `POST .../run` returns `422` with the missing worker/dependency requirement instead of running generated code on the host. Tool registry entries distinguish `category: "capability"` from `category: "example"`; the general tool reports `available_modules`. Custom result series use `x_axis_label` and `y_axis_label` and can describe arbitrary measured quantities. Source code is versioned with the plan and saved as `experiment.py` in each successful attempt bundle.
+
+## Research voice sessions
+
+`POST /api/v1/voice/session` requires the same workspace bearer token as other API routes. It returns `{ "signed_url": "wss://api.elevenlabs.io/v1/convai/conversation?..." }`, a temporary ElevenLabs connection URL. The API key stays server-side and responses use `Cache-Control: no-store`. No body is required.
+
+Configure `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID` in the shared root `.env`. `GET /api/v1/settings` includes `voice_enabled`, which reports whether both settings exist; it does not perform a live credential check. Unconfigured sessions return `503 voice_not_configured`, provider authentication failures return `502 voice_credentials_rejected`, rate limits return `503 voice_busy`, and other provider/network errors return `502 voice_unavailable`. Provider error bodies and credentials are never forwarded.

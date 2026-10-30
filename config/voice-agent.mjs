@@ -41,7 +41,7 @@ Do not claim an experiment ran, data was uploaded, a plan was saved, or results 
         ],
       },
     },
-    tts: { voiceId: 'EXAVITQu4vr4xnSDxMaL', modelId: 'eleven_flash_v2_5' },
+    tts: { voiceId: 'EXAVITQu4vr4xnSDxMaL', modelId: 'eleven_flash_v2' },
     turn: { turnEagerness: 'normal', turnTimeout: 10 },
     conversation: {
       maxDurationSeconds: 600,

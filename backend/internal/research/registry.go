@@ -127,6 +127,9 @@ func strictJSON(data []byte, v any) error {
 	return nil
 }
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+
+const maxExperimentTimeoutSeconds = 300
+
 func (r *Registry) Validate(p Plan, requireAvailable bool) error {
 	t, ok := r.Lookup(p.Adapter)
 	if !ok {
@@ -153,8 +156,8 @@ func (r *Registry) Validate(p Plan, requireAvailable bool) error {
 	if len(p.Assumptions) == 0 || len(p.Limitations) == 0 || len(p.IndependentVariables) == 0 || len(p.DependentVariables) == 0 {
 		return fmt.Errorf("explicit assumptions, limitations, independent_variables and dependent_variables are required")
 	}
-	if p.TimeoutSeconds < 1 || p.TimeoutSeconds > 300 {
-		return fmt.Errorf("timeout_seconds must be between 1 and 300")
+	if p.TimeoutSeconds < 1 || p.TimeoutSeconds > maxExperimentTimeoutSeconds {
+		return fmt.Errorf("timeout_seconds must be between 1 and %d", maxExperimentTimeoutSeconds)
 	}
 	if strings.TrimSpace(p.Domain) == "" || len(p.Domain) > 80 {
 		return fmt.Errorf("domain is required (max 80 characters)")

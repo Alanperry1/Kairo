@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -228,4 +229,56 @@ func TestLiveGoogleGemmaConnection(t *testing.T) {
 		t.Fatal("Google did not return the expected JSON object")
 	}
 	t.Log("Google Gemma authentication, native generation, and JSON output verified")
+}
+
+func TestModelPlanTimeoutUsesWorkerBudgetWithoutChangingStudy(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		timeout, want int
+		omit          bool
+	}{
+		{"omitted", 0, 120, true}, {"zero", 0, 120, false}, {"valid", 90, 90, false}, {"maximum", 300, 300, false}, {"oversized", 600, 300, false}, {"negative", -1, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := samplePlan(t, "custom")
+			original.TimeoutSeconds = tc.timeout
+			raw, _ := json.Marshal(original)
+			if tc.omit {
+				var fields map[string]json.RawMessage
+				_ = json.Unmarshal(raw, &fields)
+				delete(fields, "timeout_seconds")
+				raw, _ = json.Marshal(fields)
+			}
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				respond(w, 200, map[string]any{"response": string(raw), "done": true})
+			}))
+			defer upstream.Close()
+			got, err := NewModelClient("ollama", upstream.URL, "test-model", "").Plan(context.Background(), Experiment{Question: original.ResearchQuestion}, NewRegistry("python3", "docker", true), nil)
+			if tc.timeout < 0 {
+				if err == nil || calls.Load() != 2 {
+					t.Fatal("invalid negative timeout must still fail after repair", err, calls.Load())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.TimeoutSeconds != tc.want || calls.Load() != 1 {
+				t.Fatal("invalid model budget caused an unnecessary repair or failure", got.TimeoutSeconds, calls.Load())
+			}
+			var expectedParams, actualParams any
+			_ = json.Unmarshal(original.Parameters, &expectedParams)
+			_ = json.Unmarshal(got.Parameters, &actualParams)
+			if got.Code != original.Code || got.ResearchQuestion != original.ResearchQuestion || got.Hypothesis != original.Hypothesis || got.Methodology != original.Methodology || !reflect.DeepEqual(expectedParams, actualParams) {
+				t.Fatal("time-budget normalization changed the scientific study")
+			}
+		})
+	}
+	p := samplePlan(t, "custom")
+	p.TimeoutSeconds = 600
+	if err := NewRegistry("python3", "docker", true).Validate(p, false); err == nil || !strings.Contains(err.Error(), "timeout_seconds") {
+		t.Fatal("manual plan validation no longer enforces the worker limit", err)
+	}
 }

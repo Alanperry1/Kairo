@@ -19,6 +19,9 @@ vi.mock('@elevenlabs/react', () => ({
 let stopTrack;
 beforeEach(() => {
   vi.clearAllMocks(); sdk.status = 'disconnected'; sdk.isMuted = false; sdk.isSpeaking = false; sdk.tools = {};
+  sdk.setMuted.mockImplementation(() => {
+    if (sdk.status !== 'connected') throw new Error('No active conversation. Call startSession() first.');
+  });
   stopTrack = vi.fn();
   Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: stopTrack }] }) } });
 });
@@ -35,7 +38,17 @@ describe('ElevenLabs research conversations', () => {
     await waitFor(() => expect(sdk.startSession).toHaveBeenCalledWith({ signedUrl: sessionURL, connectionType: 'websocket' }));
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     expect(stopTrack).toHaveBeenCalledOnce();
+    expect(sdk.setMuted).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
     unmount(); expect(sdk.endSession).toHaveBeenCalled();
+  });
+  it('starts automatically for an opted-in wake activation without a second click', async () => {
+    const api = client();
+    const { rerender } = render(<VoiceConversation api={api} context={{ view: 'experiment' }} autoStart/>);
+    await waitFor(() => expect(sdk.startSession).toHaveBeenCalledWith({ signedUrl: sessionURL, connectionType: 'websocket' }));
+    rerender(<VoiceConversation api={api} context={{ view: 'experiment', status: 'planned' }} autoStart/>);
+    expect(sdk.startSession).toHaveBeenCalledOnce();
+    expect(sdk.setMuted).not.toHaveBeenCalled();
   });
   it('shares current context and prepares a question without silently changing or saving it', async () => {
     const onQuestion = vi.fn(); const user = userEvent.setup();

@@ -154,6 +154,8 @@ A separate biology study is provided in [custom-plan.json](backend/examples/cust
 
 Select **Talk to Kairo** on the Experiments page, in a new-experiment form, or in an experiment’s detail panel. Select **Start conversation** and allow microphone access. The panel shows the conversation transcript, listening/speaking state, mute and end controls, and a typed-message option. Closing the panel or leaving its view ends the session.
 
+For voice activation, enable the **Hey Kairo** switch once during your workspace visit. Say **“Hey Kairo”** (also accepts **“Hey Kario”**) to open the panel and start the ElevenLabs greeting without another click. The opt-in follows you between experiment views and resets when you reload the page. Wake listening pauses while the voice panel is open or the tab is hidden and resumes when you close the panel or return to the tab. Switch it off to release the microphone. Your browser may send wake-listening audio to its speech-recognition service; this is separate from ElevenLabs conversation audio. Browser speech recognition has limited availability, so manual **Talk to Kairo** remains available when it is unsupported.
+
 The agent can read the current question, saved method, status, and bounded findings/metrics. Uploaded dataset rows, API tokens, and database credentials are not included. Audio and the selected experiment context are sent to ElevenLabs only when you start a conversation. The conversation history shown in the panel is kept in memory; ElevenLabs may retain conversation data under your account settings.
 
 The `set_research_question` tool proposes a question; select **Use question** to apply it. On the list or an existing experiment, this opens a new draft form; in the new-experiment form, it fills the question field. It does not save, generate a plan, or start execution. Review the method and start runs using the normal workspace controls.
@@ -167,17 +169,6 @@ node --env-file=.env scripts/setup-voice-agent.mjs
 The script reuses an existing `ELEVENLABS_AGENT_ID` and creates an agent only if the ID is empty. [config/voice-agent.mjs](config/voice-agent.mjs) defines its greeting, Qwen model, voice, instructions, and client tools. Change the remote agent configuration in ElevenLabs when updating an existing agent. Restart the Go API after changing credentials.
 
 The Go endpoint `POST /api/v1/voice/session` exchanges the private key for a temporary WebSocket URL using the workspace’s existing authentication. The React SDK is loaded only when you open the voice panel. Use HTTPS or localhost for microphone access. Voice setup is independent of the experiment-planning model: `MODEL_PROVIDER=disabled` still permits voice discussions and saved questions, but does not enable AI plan generation.
-
-## Moving existing SQLite records
-
-The Go API uses PostgreSQL exclusively. Existing SQLite files are left intact. Stop the old API before importing, keep the same `DATA_DIR`, and back up that directory first. With `psql` installed and an empty remote database, from the project root:
-
-```sh
-set -o pipefail
-python3 backend/scripts/migrate-sqlite.py backend/data/researchos.db | psql "YOUR_REMOTE_DATABASE_URL" -v ON_ERROR_STOP=1
-```
-
-This imports projects, datasets, experiments, plan versions, events, and artifact metadata in one transaction. It creates the schema and restores event numbering. It refuses a populated target; it never merges or overwrites records. Artifact and uploaded dataset files stay in `DATA_DIR`. Start the new Go API after the import. Replace `YOUR_REMOTE_DATABASE_URL` with the remote connection string. If you have no existing records, simply start the API to create its tables.
 
 ## Authentication and workers
 

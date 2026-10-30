@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ConversationProvider, useConversationClientTool, useConversationControls, useConversationInput, useConversationMode, useConversationStatus } from '@elevenlabs/react';
 import { ArrowUp, Check, LoaderCircle, Mic, MicOff, Square } from 'lucide-react';
 
-function VoiceSession({ api, context, onQuestion, available, messages, error, setError, resetMessages }) {
+function VoiceSession({ api, context, onQuestion, available, messages, error, setError, resetMessages, autoStart = false }) {
   const { startSession, endSession, sendContextualUpdate, sendUserMessage } = useConversationControls();
   const { status } = useConversationStatus();
   const { isSpeaking } = useConversationMode();
@@ -13,6 +13,7 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
   const generation = useRef(0);
   const pending = useRef(null);
   const transcript = useRef(null);
+  const startRef = useRef(null);
   const contextText = JSON.stringify(context || { view: 'experiments' });
   const connected = status === 'connected';
   const busy = preparing || status === 'connecting';
@@ -46,21 +47,22 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
     endSession();
   }
   async function start() {
-    if (busy || connected) return;
+    if (available === false || busy || connected) return;
     const attempt = ++generation.current;
     const controller = new AbortController();
     pending.current = controller;
     setPreparing(true); setError(''); setProposal(''); resetMessages();
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access needs HTTPS or localhost and a supported browser.');
-      // Ask permission on the explicit Start click, and release this probe stream.
+      // Ask permission after an explicit Start click or an opted-in wake phrase, and release this probe stream.
       // The SDK owns the actual conversation stream and stops it on disconnect.
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((track) => track.stop());
       if (generation.current !== attempt) return;
       const session = await api.startVoiceSession(controller.signal);
       if (generation.current !== attempt) return;
-      setMuted(false);
+      // The SDK starts unmuted and resets mute state on disconnect.
+      // setMuted requires an active conversation, so do not call it here.
       startSession({ signedUrl: session.signed_url, connectionType: 'websocket' });
     } catch (failure) {
       if (generation.current !== attempt || failure.name === 'AbortError') return;
@@ -70,6 +72,12 @@ function VoiceSession({ api, context, onQuestion, available, messages, error, se
       if (generation.current === attempt) { setPreparing(false); pending.current = null; }
     }
   }
+  startRef.current = start;
+  useEffect(() => {
+    if (!autoStart) return;
+    const timer = setTimeout(() => startRef.current(), 0);
+    return () => clearTimeout(timer);
+  }, [autoStart]);
   function send() {
     if (!connected || !message.trim()) return;
     sendUserMessage(message.trim()); setMessage('');

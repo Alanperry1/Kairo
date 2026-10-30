@@ -90,7 +90,7 @@ func TestDatabaseURLValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, value := range []string{"", "./researchos.db", "https://localhost/kairo", "postgres://localhost/", "postgres://user:secret@localhost/%zz"} {
+	for _, value := range []string{"", "./data/database", "https://localhost/kairo", "postgres://localhost/", "postgres://user:secret@localhost/%zz"} {
 		err := validateDatabaseURL(value)
 		if err == nil {
 			t.Fatal("invalid database URL accepted")

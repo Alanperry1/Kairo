@@ -7,6 +7,7 @@ import Dialog from './components/Dialog';
 import ExperimentDetails, { Status } from './components/ExperimentDetails';
 import ResearchForm from './components/ResearchForm';
 import VoiceAgent from './components/VoiceAgent';
+import { VoiceActivationProvider } from './voice-activation';
 
 const nav = [['Experiments', FlaskConical], ['Reports', FileText], ['Datasets', Folder]];
 const domains = { physics: { Icon: Atom, color: 'purple' }, statistics: { Icon: ChartNoAxesCombined, color: 'green' }, computer_science: { Icon: Code2, color: 'blue' } };
@@ -116,7 +117,7 @@ export default function App({ client }) {
     finally { setDownloadPending(''); }
   }
   function saveToken(token) { tokenRef.current = token; storeSessionToken(token); setHasToken(!!token); refresh(); notify(token ? 'Token saved. Reconnecting to the API…' : 'Token cleared. Reconnecting…'); }
-  return <div className="app-shell">
+  return <VoiceActivationProvider><div className="app-shell">
     <aside className="sidebar">
       <a className="workspace" aria-label="Kairo home" href="/"><span className="brand-mark"><Orbit size={19}/></span><strong>Kairo</strong></a>
       <nav aria-label="Workspace">{nav.map(([label, Icon]) => <button key={label} aria-label={label} title={label} className={`nav-item ${page === label ? 'active' : ''}`} onClick={() => changePage(label)}><Icon size={17}/><span>{label}</span></button>)}</nav>
@@ -157,7 +158,7 @@ export default function App({ client }) {
       {modal.type === 'help' && <><p>Ask a question, review a research plan, and follow the experiment from execution to evidence.</p><div className="detail-section"><h3>Start with your research question</h3><p>Choose New experiment and describe what you want to investigate. Generate a plan with a connected model or add your own manual plan, then review it before running.</p><h3>Use AI planning</h3><p>Configure Ollama or a compatible model on the Go backend. AI mode generates a plan for your question, which you review before execution. Unsupported requests and missing inputs appear as explicit errors.</p><h3>Results you can reproduce</h3><p>Completed experiments provide findings, charts, CSV data, a Markdown report, and a ZIP containing the source and exact inputs. Open an experiment’s Results and Artifacts tabs to explore them.</p><h3>Connection</h3><p>During development, Vite forwards /api to the Go backend on port 8080. Check Workspace settings if the backend requires a token. Configuration and deployment instructions are in the project README.</p></div></>}
     </Dialog>}
     {toast && <div className="toast" role="status"><CircleCheck size={16}/>{toast}</div>}
-  </div>;
+  </div></VoiceActivationProvider>;
 }
 
 function ProjectForm({ api, onSaved }) {

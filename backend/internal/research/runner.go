@@ -31,8 +31,11 @@ var workerCode string
 var runtimeCatalog string
 
 type WorkerInput struct {
-	Plan        *Plan               `json:"plan"`
-	DatasetRows []map[string]string `json:"dataset_rows,omitempty"`
+	DatasetStream    bool                  `json:"dataset_stream,omitempty"`
+	Dataset          *Dataset              `json:"dataset,omitempty"`
+	WriteDatasetRows func(io.Writer) error `json:"-"`
+	Plan             *Plan                 `json:"plan"`
+	DatasetRows      []map[string]string   `json:"dataset_rows,omitempty"`
 }
 type Executor interface {
 	Execute(context.Context, WorkerInput) (Result, error)
@@ -74,13 +77,41 @@ func (p PythonExecutor) Execute(ctx context.Context, input WorkerInput) (Result,
 		cmd = exec.CommandContext(ctx, p.Python, "-I", "-c", workerCode)
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "OPENBLAS_NUM_THREADS=1", "OMP_NUM_THREADS=1", "MKL_NUM_THREADS=1", "PYTHONDONTWRITEBYTECODE=1"}
 	}
-	cmd.Stdin = bytes.NewReader(data)
+	var inputDone chan error
+	var inputPipe *io.PipeReader
+	if input.DatasetStream {
+		if input.WriteDatasetRows == nil {
+			return result, errors.New("dataset stream is unavailable")
+		}
+		reader, writer := io.Pipe()
+		inputPipe = reader
+		inputDone = make(chan error, 1)
+		go func() {
+			_, err := writer.Write(append(append([]byte("KAIRO_DATASET_STREAM\n"), data...), '\n'))
+			if err == nil {
+				err = input.WriteDatasetRows(writer)
+			}
+			_ = writer.CloseWithError(err)
+			inputDone <- err
+		}()
+		cmd.Stdin = reader
+	} else {
+		cmd.Stdin = bytes.NewReader(data)
+	}
 	stdout := &limitedBuffer{limit: 16 << 20}
 	stderr := &limitedBuffer{limit: 16 << 10}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = 2 * time.Second
-	if err = cmd.Run(); err != nil {
+	err = cmd.Run()
+	if inputPipe != nil {
+		_ = inputPipe.Close()
+		inputErr := <-inputDone
+		if err == nil && inputErr != nil {
+			return result, fmt.Errorf("dataset streaming failed: %w", inputErr)
+		}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
@@ -196,7 +227,26 @@ func (j *Jobs) Input(e Experiment) (WorkerInput, error) {
 	if err != nil {
 		return input, err
 	}
-	raw, err := readObject(j.ctx, j.objectStorage(), "datasets/"+d.ID+".csv", 11<<20)
+	var params GeneralParams
+	if isCustomAdapter(e.Plan.Adapter) {
+		if err := json.Unmarshal(e.Plan.Parameters, &params); err != nil {
+			return input, err
+		}
+	}
+	large := d.Size > InlineDatasetBytes || d.Rows > InlineDatasetRows
+	if large && params.DatasetMode != "stream" {
+		return input, errors.New("this dataset needs dataset_mode=stream with a Python row-iterator method; replan in Python or attach a smaller file")
+	}
+	if params.DatasetMode == "stream" {
+		if e.Plan.Adapter != "python.experiment" {
+			return input, errors.New("large dataset streaming requires Python")
+		}
+		input.DatasetStream = true
+		input.Dataset = &d
+		input.WriteDatasetRows = func(writer io.Writer) error { return j.streamDatasetRows(j.ctx, d, writer) }
+		return input, nil
+	}
+	raw, err := readObject(j.ctx, j.objectStorage(), "datasets/"+d.ID+".csv", InlineDatasetBytes)
 	if err != nil {
 		return input, err
 	}
@@ -264,12 +314,14 @@ func (j *Jobs) run(e Experiment) {
 	if err != nil || current.Status != "running" || current.Attempt != e.Attempt {
 		return
 	}
+	_ = j.store.Event(e.ID, "input_validation", "Checking dataset integrity, plan requirements, and worker libraries")
 	input, err := j.Input(e)
 	if err == nil {
 		err = j.registry.Validate(*e.Plan, true)
 	}
 	var result Result
 	if err == nil {
+		_ = j.store.Event(e.ID, "executing", "Running the reviewed experiment code in the scientific worker")
 		result, err = j.executor.Execute(ctx, input)
 	}
 	if err != nil {
@@ -304,6 +356,7 @@ func (j *Jobs) run(e Experiment) {
 		j.fail(e.ID, e.Attempt, ctx.Err())
 		return
 	}
+	_ = j.store.Event(e.ID, "packaging", "Uploading computed results, source, and reproduction files to object storage")
 	if err = j.writeArtifactsWithContext(ctx, e, input, result); err != nil {
 		j.fail(e.ID, e.Attempt, fmt.Errorf("artifact packaging: %w", err))
 		return
@@ -357,6 +410,9 @@ func (j *Jobs) writeArtifactsWithContext(ctx context.Context, e Experiment, inpu
 	if err = encode("results.json", result); err != nil {
 		return err
 	}
+	if input.DatasetStream {
+		files["prepare-stream.py"] = []byte(prepareStreamCode)
+	}
 	files["worker.py"] = []byte(workerCode)
 	files["runtimes.json"] = []byte(runtimeCatalog)
 	if e.Plan.Code != "" {
@@ -376,6 +432,9 @@ func (j *Jobs) writeArtifactsWithContext(ctx context.Context, e Experiment, inpu
 	files["REPRODUCE.md"] = []byte("# Reproduce this computational experiment\n\nUse the Python version in provenance.json. Install requirements.txt if nonempty. Run:\n\n```sh\npython3 -m pip install -r requirements.txt\npython3 -I worker.py < input.json > replay.json\n```\n\nCompare replay.json metrics with results.json. Physics and statistical computations are deterministic within floating-point/library differences. Benchmark timing varies across hardware and load. AI narrative is separately labeled and is not reproduced by this command. input.json includes the exact selected data values for statistical analyses. Template adapters use fixed code. General experiments include custom experiment.py, which must be reviewed and replayed in an isolated Docker worker. For general replay use the recorded worker image with --network none --read-only --memory 768m --cpus 1 --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 -e KAIRO_ISOLATED_WORKER=1, mounting the extracted attempt directory read-only; run python3 -I worker.py with input.json on stdin.\n")
 	if isCustomAdapter(e.Plan.Adapter) {
 		files["REPRODUCE.md"] = []byte("# Reproduce this custom experiment\n\nReview the experiment source and methodology before running custom code. Use the same worker image and dependency versions recorded in provenance.json. The commands below use the default local image name; replace it if provenance records another image.\n\nFrom the extracted attempt directory:\n\n```sh\ndocker run --rm -i --pull=never --network none --read-only \\\n  --memory 768m --cpus 1 --pids-limit 64 --cap-drop ALL \\\n  --security-opt no-new-privileges --user 65534:65534 \\\n  --tmpfs /tmp:size=256m,exec,nosuid,nodev \\\n  --mount \"type=bind,src=$(pwd),dst=/experiment,readonly\" \\\n  -w /experiment -e KAIRO_ISOLATED_WORKER=1 -e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOPATH=/tmp/go -e GOMAXPROCS=1 -e MPLCONFIGDIR=/tmp/matplotlib \\\n  -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 \\\n  researchos-worker:local python3 -I worker.py < input.json > replay.json\n```\n\ninput.json contains the exact reviewed code, parameters, and selected dataset rows. Compare replay.json metrics with results.json. Floating-point/library differences and benchmark timing can vary. AI interpretation is not reproduced. No API token or model credentials are needed.\n")
+	}
+	if input.DatasetStream {
+		files["REPRODUCE.md"] = append(files["REPRODUCE.md"], []byte("\n## Streaming dataset replay\n\nDownload the exact dataset from the workspace to dataset.csv and verify its SHA-256 against input.json.dataset.sha256. Replace the input.json stdin redirection in the Docker command with this pipeline: python3 prepare-stream.py | docker run [same isolation flags] IMAGE python3 -I worker.py > replay.json. The helper reads input.json and dataset.csv incrementally and checks the full checksum. The full dataset is not embedded into this source ZIP.\n")...)
 	}
 	var dataset *Dataset
 	if e.DatasetID != "" {

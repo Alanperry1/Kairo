@@ -36,14 +36,17 @@ type ResearchDocument struct {
 }
 
 type documentSections struct {
-	Figures      []string `json:"figures,omitempty"`
-	Title        string   `json:"title"`
-	Abstract     string   `json:"abstract"`
-	Introduction string   `json:"introduction"`
-	Methods      string   `json:"methods"`
-	Results      string   `json:"results"`
-	Discussion   string   `json:"discussion"`
-	Conclusion   string   `json:"conclusion"`
+	Background        string   `json:"background,omitempty"`
+	ExperimentalSetup string   `json:"experimental_setup,omitempty"`
+	Keywords          []string `json:"keywords,omitempty"`
+	Figures           []string `json:"figures,omitempty"`
+	Title             string   `json:"title"`
+	Abstract          string   `json:"abstract"`
+	Introduction      string   `json:"introduction"`
+	Methods           string   `json:"methods"`
+	Results           string   `json:"results"`
+	Discussion        string   `json:"discussion"`
+	Conclusion        string   `json:"conclusion"`
 }
 
 type metricEntry struct {
@@ -87,6 +90,9 @@ func (m *ModelClient) DraftResearchDocument(ctx context.Context, e Experiment, k
 	if len(includeFigures) > 0 && !includeFigures[0] {
 		system += " The user requested text only. Do not select or reference any figures."
 	}
+	if kind == "manuscript" {
+		system += " Follow a two-column conference-paper structure. In addition to the required fields, return background (plain-text context and related-work limitations, without invented literature), experimental_setup (recorded data, controls, parameters, runtime and evaluation protocol only), and keywords (3–6 concise topic strings). The app renders Introduction, Background and Related Work, Methodology, Experimental Setup, Results, Discussion, Conclusion, and provenance. Do not claim unrecorded repetitions, baselines, uncertainty estimates, or references."
+	}
 	system += " The requested output is a " + kind + " draft."
 	text, err := m.Generate(ctx, system, string(evidence), true)
 	if err != nil {
@@ -99,6 +105,14 @@ func (m *ModelClient) DraftResearchDocument(ctx context.Context, e Experiment, k
 	for _, part := range []string{draft.Title, draft.Abstract, draft.Introduction, draft.Methods, draft.Results, draft.Discussion, draft.Conclusion} {
 		if strings.TrimSpace(part) == "" || utf8.RuneCountInString(part) > 12000 {
 			return documentSections{}, "", fmt.Errorf("writing agent returned an incomplete or oversized document")
+		}
+	}
+	if len(draft.Keywords) > 8 || utf8.RuneCountInString(draft.Background) > 12000 || utf8.RuneCountInString(draft.ExperimentalSetup) > 12000 {
+		return documentSections{}, "", fmt.Errorf("writing agent returned oversized manuscript sections")
+	}
+	for _, keyword := range draft.Keywords {
+		if strings.TrimSpace(keyword) == "" || utf8.RuneCountInString(keyword) > 80 {
+			return documentSections{}, "", fmt.Errorf("writing agent returned invalid keywords")
 		}
 	}
 	if utf8.RuneCountInString(draft.Title) > 200 {
@@ -125,28 +139,7 @@ func renderResearchDocument(e Experiment, d documentSections, kind string, figur
 	sections := [][2]string{{"Introduction", d.Introduction}, {"Methods", d.Methods}, {"Results", d.Results}, {"Discussion", d.Discussion}, {"Conclusion", d.Conclusion}}
 	var out strings.Builder
 	if kind == "manuscript" {
-		out.WriteString("\\documentclass[11pt]{article}\n\\usepackage[margin=1in]{geometry}\n\\usepackage{iftex}\n\\ifPDFTeX\n\\usepackage[T1]{fontenc}\n\\usepackage[utf8]{inputenc}\n\\usepackage{lmodern}\n\\else\n\\usepackage{fontspec}\n\\setmainfont{Latin Modern Roman}\n\\fi\n\\usepackage{longtable}\n\\usepackage{graphicx}\n\\usepackage{hyperref}\n\\hypersetup{hidelinks}\n\\title{" + latexText(d.Title) + "}\n\\author{Author names to be added}\n\\date{}\n\\begin{document}\n\\maketitle\n")
-		out.WriteString("\\noindent\\textbf{Research draft.} Based on one recorded computational experiment. Review scientific claims, authorship, and references before sharing.\n\\begin{abstract}\n" + latexText(d.Abstract) + "\n\\end{abstract}\n")
-		for _, section := range sections {
-			out.WriteString("\\section{" + section[0] + "}\n" + latexText(section[1]) + "\n\n")
-			if section[0] == "Results" {
-				for i, figure := range figures {
-					out.WriteString("\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width=0.96\\linewidth]{" + figure.PDF + "}\n\\caption{" + latexText(figure.Caption) + "}\n\\label{fig:kairo-" + fmt.Sprint(i+1) + "}\n\\end{figure}\n")
-				}
-			}
-		}
-		out.WriteString("\\section{Recorded evidence}\n\\begin{longtable}{p{0.36\\linewidth}p{0.56\\linewidth}}\n\\textbf{Metric} & \\textbf{Recorded value} \\\\ \\hline\n")
-		for _, metric := range documentMetrics(e.Result.Metrics) {
-			out.WriteString(latexText(metric.Name) + " & " + latexText(metric.Value) + " \\\\ \\hline\n")
-		}
-		out.WriteString("\\end{longtable}\nMetric displays are limited to 60 entries and long values are abbreviated. The complete recorded evidence is included in evidence.json.\n\\section{Assumptions and limitations}\n\\begin{itemize}\n")
-		for _, text := range append(append(append([]string{}, e.Plan.Assumptions...), e.Plan.Limitations...), e.Result.Limitations...) {
-			out.WriteString("\\item " + latexText(text) + "\n")
-		}
-		if len(e.Plan.Assumptions)+len(e.Plan.Limitations)+len(e.Result.Limitations) == 0 {
-			out.WriteString("\\item No explicit limitations were recorded. Author review is required.\n")
-		}
-		out.WriteString("\\end{itemize}\n\\section{Reproducibility}\nExperiment: " + latexText(e.ID) + ". Attempt: " + fmt.Sprint(e.Attempt) + ". Plan version: " + fmt.Sprint(e.PlanVersion) + ". Language: " + latexText(planLanguage(*e.Plan)) + ". Runtime: " + latexText(e.Result.RuntimeVersion) + ". Python worker: " + latexText(e.Result.PythonVersion) + ". Use the saved experiment reproduction bundle for code, exact inputs, and runtime details.\n\\section{References}\nNo external references were supplied. Authors must add and verify appropriate citations before publication.\n\\end{document}\n")
+		return renderManuscript(e, d, figures)
 	} else {
 		out.WriteString("# " + d.Title + "\n\nResearch draft — review scientific claims, authorship, and references before sharing.\n\n## Abstract\n\n" + d.Abstract + "\n\n")
 		for _, section := range sections {
@@ -257,6 +250,8 @@ func (s *Server) generateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	includeFigures := req.IncludeFigures == nil || *req.IncludeFigures
+	taskStatus(r.Context(), "Reading the completed experiment’s saved evidence")
+	taskStatus(r.Context(), "Writing the "+req.Kind+" draft")
 	draft, source, err := s.Model.DraftResearchDocument(r.Context(), e, req.Kind, includeFigures)
 	if err != nil {
 		apiError(w, 502, "document_generation_failed", "The writing agent could not generate a complete draft. Existing evidence and documents are unchanged.")
@@ -272,6 +267,9 @@ func (s *Server) generateDocument(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		apiError(w, 502, "invalid_figures", err.Error())
 		return
+	}
+	if len(specs) > 0 {
+		taskStatus(r.Context(), "Rendering Matplotlib figures from recorded data")
 	}
 	figures, assets, err := s.renderDocumentFigures(r.Context(), specs)
 	if err != nil {
@@ -291,6 +289,7 @@ func (s *Server) generateDocument(w http.ResponseWriter, r *http.Request) {
 	if err = r.Context().Err(); err != nil {
 		return
 	}
+	taskStatus(r.Context(), "Uploading the source, evidence, and figures to object storage")
 	if err = s.saveDocumentObjects(r.Context(), d); err != nil {
 		handleError(w, err)
 		return
@@ -301,6 +300,7 @@ func (s *Server) generateDocument(w http.ResponseWriter, r *http.Request) {
 	metadata.Figures = nil
 	metadata.AssetFiles = nil
 	metadata.AssetData = nil
+	taskStatus(r.Context(), "Saving document metadata and provenance")
 	if err = s.Store.SaveResearchDocument(metadata); err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -361,7 +361,12 @@ func (s *Server) documentBundle(w http.ResponseWriter, r *http.Request) {
 	if d.Kind == "manuscript" {
 		name = "main.tex"
 	}
-	files := map[string][]byte{name: []byte(d.Content), "evidence.json": d.Evidence, "README.md": []byte("# Kairo research draft\n\nThis draft requires author review of claims, citations, and authorship. No external references were invented.\n\nFor a manuscript, compile main.tex with LuaLaTeX (lualatex main.tex), or upload it to Overleaf and select LuaLaTeX. PDF compilation is not performed by the app.\n\nThe evidence snapshot is tied to experiment " + d.ExperimentID + ", attempt " + fmt.Sprint(d.Attempt) + ", plan version " + fmt.Sprint(d.PlanVersion) + ".\nSHA-256 of evidence.json: " + d.EvidenceSHA256 + "\n\nDownload the original experiment reproduction bundle for exact inputs and runtime details.\n")}
+	files := map[string][]byte{name: []byte(d.Content), "evidence.json": d.Evidence, "README.md": []byte("# Kairo research draft\n\nThis draft requires author review of claims, citations, and authorship. No external references were invented.\n\nFor a manuscript, compile main.tex with LuaLaTeX (lualatex main.tex), or upload it to Overleaf and select LuaLaTeX. Use Generate & download PDF in the manuscript viewer to compile and save a PDF. A verified compiled PDF is included as main.pdf in this ZIP when available.\n\nThe evidence snapshot is tied to experiment " + d.ExperimentID + ", attempt " + fmt.Sprint(d.Attempt) + ", plan version " + fmt.Sprint(d.PlanVersion) + ".\nSHA-256 of evidence.json: " + d.EvidenceSHA256 + "\n\nDownload the original experiment reproduction bundle for exact inputs and runtime details.\n")}
+	if d.Kind == "manuscript" {
+		if _, pdf, err := s.cachedManuscriptPDF(r.Context(), d); err == nil {
+			files["main.pdf"] = pdf
+		}
+	}
 	var snapshot Experiment
 	if json.Unmarshal(d.Evidence, &snapshot) == nil {
 		if snapshot.Plan != nil {

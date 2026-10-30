@@ -30,7 +30,7 @@ func TestLanguageSelectionAndValidation(t *testing.T) {
 	if err := validateLanguageChoice("auto", p); err != nil {
 		t.Fatal(err)
 	}
-	p.Language = "julia"
+	p.Language = "lua"
 	if err := r.Validate(p, true); err == nil {
 		t.Fatal("uninstalled runtime allowed")
 	}
@@ -239,5 +239,24 @@ func TestLiveLanguagePlanningAndExecution(t *testing.T) {
 			}
 			t.Log("PASS live Gemma plan → persisted language preference →", e.Plan.Language, "computation → reproducibility artifacts")
 		})
+	}
+}
+
+func TestRemovedLanguagesAreRejectedAndExcluded(t *testing.T) {
+	for _, language := range []string{"rust", "ruby", "julia", "rs", "rb", "jl"} {
+		if validLanguage(language) {
+			t.Errorf("removed language %s accepted", language)
+		}
+	}
+	r := NewRegistry("python3", "docker", true)
+	r.SetLanguages([]Language{{ID: "python", Available: true}, {ID: "rust", Available: true}, {ID: "ruby", Available: true}, {ID: "julia", Available: true}, {ID: "go", Available: true}})
+	if len(r.Languages()) != 2 {
+		t.Fatal("removed runtimes exposed to planner", r.Languages())
+	}
+	p := samplePlan(t, "custom")
+	p.Adapter = "language.experiment"
+	p.Language = "rust"
+	if err := r.Validate(p, false); err == nil {
+		t.Fatal("removed language plan accepted for review")
 	}
 }

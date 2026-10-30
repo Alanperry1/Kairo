@@ -22,6 +22,7 @@ Common statuses: `400` malformed input, `401` missing/invalid token, `403` disal
 | PATCH | `/api/v1/experiments/{id}` | Change permitted fields |
 | DELETE | `/api/v1/experiments/{id}` | Delete experiment, events, plans, artifact metadata and files; returns `204` |
 | POST | `/api/v1/experiments/{id}/plan` | Ask configured model for a validated plan; synchronous |
+| POST | `/api/v1/experiments/{id}/plan/stream` | Stream stages and draft output, then return the validated saved plan |
 | PUT | `/api/v1/experiments/{id}/plan` | Validate and version a manual plan |
 | GET | `/api/v1/experiments/{id}/plans` | Immutable plan revision history |
 | POST | `/api/v1/experiments/{id}/run` | Queue the saved plan; returns `202` |
@@ -72,6 +73,19 @@ Events accept `?after=<event-id>` (nonnegative) and return up to 200 events. SSE
 
 Cancellation commits the cancelled state before signalling the worker. A planning HTTP request may finish its in-flight model call, but its late response cannot overwrite the cancelled state. Startup recovery marks interrupted planning/running work failed; queued work stays queued.
 
+## Live task streams
+
+`POST /api/v1/assistant/chat/stream`, `POST /api/v1/experiments/{id}/plan/stream`, and `POST /api/v1/experiments/{id}/documents/stream` accept the same bodies and bearer authentication as their JSON equivalents. Responses use `text/event-stream` with JSON `data` and these event names:
+
+- `status`: `{ "message": "Writing the manuscript draft" }`.
+- `model_start`: `{ "provider": "google", "model": "..." }`; a new attempt resets the draft preview.
+- `delta`: `{ "text": "..." }`, incremental model output. JSON fields may be incomplete until generation finishes.
+- `heartbeat`: `{}` every eight seconds while the task is pending.
+- `done`: `{ "status": 201, "result": { ... } }`, the original endpoint result after validation and saving.
+- `error`: `{ "status": 422, "error": { "code": "...", "message": "..." } }`; a failed task does not emit `done`.
+
+After streaming headers are sent, logical failure statuses appear in `error` events rather than the HTTP status. Do not treat an HTTP 200, partial draft, or disconnected stream as successful completion. Provider reasoning fields are excluded. Disconnecting cancels the request's upstream model call; check saved state before retrying if saving had begun. These POST streams are not resumable; durable execution events use the separate resumable GET endpoint above. Disable proxy response buffering for SSE.
+
 ## Projects, datasets, reports, dashboard
 
 | Method | Route | Behavior |
@@ -96,7 +110,7 @@ Dataset upload example:
 curl -F 'file=@examples/groups.csv' http://127.0.0.1:8080/api/v1/datasets
 ```
 
-CSV limits: 10 MiB file, 11 MiB total multipart body, 50,000 data rows, 2–100 uniquely named columns, 10,000 characters per cell. Headers must be trimmed and nonempty. Optional UTF-8 BOM is stripped; the hash refers to stored normalized bytes. Preview includes the first five records. Upload stores data; it does not automatically run an analysis. No network dataset connectors or instrument APIs are implemented.
+CSV limits: 5 GB (5,000,000,000 bytes) per file, no stored row-count cap, 2–100 uniquely named trimmed columns, 10,000 characters per cell, physical lines up to 1 MiB, and multiline records up to 2 MiB. The original bytes (including any BOM) are stored and hashed. Preview includes five records. Uploads stream to object storage; R2 uses sequential 16 MiB multipart parts and aborts invalid/failed transfers. Upload/import endpoints permit six-hour read/write deadlines. A dataset over 20 MiB or 100,000 rows requires a Python plan with `parameters.dataset_mode="stream"`; `dataset_rows` is then an iterator rather than an in-memory list. No automatic truncation or sampling occurs.
 
 Reports are Markdown, plots are SVG, downloadable results are JSON/CSV. PDF rendering is not included.
 
@@ -120,8 +134,26 @@ Configure `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID` in the shared root `.en
 
 `POST /api/v1/assistant/chat` accepts `{messages: [{role: "user" | "assistant", content: string}], experiment_id?: string}`. Supply 1–24 messages, end with a user turn, and keep total text under 32000 characters. Optional experiment context is loaded from the database. The response contains `message`, optional `follow_up: {prompt, options: string[]}` (2–5 distinct choices), and optional `draft: {question, language}`. A reply never saves or runs an experiment; the user explicitly reviews and submits a proposed draft. Invalid model output returns 502; provider throttling returns 429 with `Retry-After`. Chat history is provided by the client and is not persisted.
 
+### Workspace knowledge in chat
+
+Both JSON and streaming chat accept optional `dataset_id` as well as `experiment_id`. The assistant can request internal `workspace_search`, `workspace_offset`, and `workspace_read` actions. These are handled server-side within the authenticated request, with at most five model turns and a 64 KB retrieval payload budget. Search pages include at most 20 records, total match counts, and offsets. Retrieval covers experiments, projects, datasets, report/manuscript metadata, current and historical plans, activity, and registered artifact names. Saved document and permitted text artifact bodies are read from configured object storage on demand, with integrity checks. No new public read or mutation route is added.
+
+Final replies may include `sources: [{key, kind, id, title, experiment_id?}]`. These references are built from records actually read by the server; model-supplied source lists are discarded. Tool requests are removed from the final response. Truncated text and dataset-preview scopes are explicitly marked in model context. Missing/unreadable records are reported as unavailable rather than fabricated. Chat streams emit search/read stages and fresh `model_start`/`delta` events for each retrieval turn. The voice client tool `ask_workspace` calls this same chat stream.
+
 ### Evidence figures in generated documents
 
 `POST /api/v1/experiments/{id}/documents` accepts `{kind: "report" | "manuscript", include_figures?: boolean}`. Omit `include_figures` for automatic useful-figure selection; `false` requests text only. Successful document responses may include `figures: [{name, pdf, caption, source, kind, renderer}]`.
 
 `GET /api/v1/documents/{documentID}/figures/{name...}` serves only the document's listed PNG/PDF figures behind the existing API authentication. Asset hashes are verified. The document bundle includes images, vector PDFs, the figure manifest, and fixed plotting code/data/requirements. LaTeX uses relative vector PDF paths, so use the complete ZIP when compiling a manuscript with figures. No generated Python code is executed by the figure renderer; the writing agent selects validated evidence sources, not numerical values or file paths.
+
+### Dataset discovery and import
+
+- `GET /api/v1/datasets/search?q=...`: search the workspace and public UK/California CSV catalogs. Returns `{workspace, public, warnings}`. Public candidates include `name`, `url`, `publisher`, and available license/description metadata. Catalog failures are reported, not replaced with invented results.
+- `POST /api/v1/datasets/import`: `{url, name?}`. Downloads a public HTTPS CSV directly into R2, validates it, then returns saved dataset metadata. URL redirects and resolved addresses are checked; private-network URLs and credentials in URLs are rejected. Gated files and archive extraction are not supported.
+- The assistant chat accepts optional `dataset_id`; drafts may propose an existing workspace `dataset_id`. A model `dataset_search` action triggers a bounded search and returns source-backed candidates to the UI. Import is a separate user action; chat does not claim a source is already imported.
+
+### Manuscript PDF export
+
+`POST /api/v1/documents/{documentID}/pdf` compiles a saved manuscript and returns `{name, sha256, source_sha256, size, compiled_at, compiler}` with HTTP 201, or HTTP 200 for a verified cached PDF. `/pdf/stream` provides the same operation with `status`, `heartbeat`, `done`, and `error` events. `GET /api/v1/documents/{documentID}/pdf` downloads the verified PDF as an authenticated attachment; it returns 404 before generation. Reports return 422. Compilation failures return 502 `pdf_compilation_failed` and do not modify the source or evidence. The source ZIP includes a verified `main.pdf` when available.
+
+One compilation runs at a time. Bubblewrap isolates the compiler from network, workspace files and application environment variables; it exposes only the read-only system TeX runtime and memory-only working directories. Compilation uses two pdfLaTeX passes with shell escape disabled, a 75-second request timeout, bounded memory/files/output, and validated figure inputs. Finished PDFs and manifests are stored through the configured object storage and bound to the saved source/figure hashes.

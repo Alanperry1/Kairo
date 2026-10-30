@@ -44,7 +44,14 @@ func normalizeLanguage(s string) string {
 	}
 	return s
 }
-func validLanguage(s string) bool { return languageName.MatchString(s) }
+func removedLanguage(s string) bool {
+	switch normalizeLanguage(s) {
+	case "rust", "ruby", "julia":
+		return true
+	}
+	return false
+}
+func validLanguage(s string) bool { return languageName.MatchString(s) && !removedLanguage(s) }
 func planLanguage(p Plan) string {
 	if p.Adapter != "language.experiment" {
 		return "python"
@@ -72,8 +79,15 @@ func sourceFilename(p Plan) string {
 	}
 	return "experiment." + ext
 }
-func WorkerProbeCode() string                         { return workerCode }
-func (r *Registry) SetLanguages(languages []Language) { r.languages = languages }
+func WorkerProbeCode() string { return workerCode }
+func (r *Registry) SetLanguages(languages []Language) {
+	r.languages = nil
+	for _, language := range languages {
+		if !removedLanguage(language.ID) {
+			r.languages = append(r.languages, language)
+		}
+	}
+}
 func (r *Registry) Languages() []Language {
 	if len(r.languages) > 0 {
 		return r.languages

@@ -127,3 +127,22 @@ describe('ElevenLabs research conversations', () => {
   });
 
 });
+
+it('finds real datasets and offers workspace selection during a voice conversation',async()=>{
+ sdk.status='connected';const api={startVoiceSession:vi.fn(),searchDatasets:vi.fn().mockResolvedValue({workspace:[{id:'ds_growth',name:'growth.csv'}],public:[]})};const select=vi.fn();
+ render(<VoiceConversation api={api} context={{view:'new_experiment'}} onDatasetSelected={select}/>);let result;await act(async()=>{result=JSON.parse(await sdk.tools.find_datasets({query:'growth'}));});
+ expect(result.requires_user_selection).toBe(true);expect(select).not.toHaveBeenCalled();await userEvent.click(screen.getByRole('button',{name:'Use dataset'}));expect(select).toHaveBeenCalledWith({id:'ds_growth',name:'growth.csv'});expect(sdk.sendUserMessage).toHaveBeenCalledWith('Use the workspace dataset growth.csv (ID: ds_growth).');
+});
+
+it('uses the streaming workspace knowledge service for voice questions',async()=>{
+ const source={key:'experiment:exp_saved',kind:'experiment',id:'exp_saved',title:'Recorded study'};
+ const api={...client(),chatStream:vi.fn(async(body,update)=>{update({event:'status',message:'Reading saved manuscript evidence'});update({event:'delta',text:'{"message":"The saved study reports 99.4"}'});return {message:'The saved study reports 99.4.',sources:[source]};})};
+ render(<VoiceConversation api={api} context={{id:'exp_saved'}}/>);
+ let result;await act(async()=>{result=JSON.parse(await sdk.tools.ask_workspace({question:'What did our last study find?'}));});
+ expect(api.chatStream).toHaveBeenCalledWith({messages:[{role:'user',content:'What did our last study find?'}],experiment_id:'exp_saved'},expect.any(Function),expect.any(AbortSignal));expect(result.message).toContain('99.4');expect(result.sources).toEqual([source]);expect(screen.getByText('Reading saved manuscript evidence')).toBeTruthy();expect(screen.getByText('Task completed')).toBeTruthy();
+});
+
+it('lets voice generate a saved PDF and exposes its download',async()=>{
+ const api={...client(),generateDocumentPDF:vi.fn(async(id,update)=>{update({event:'status',message:'Compiling saved LaTeX'});return {sha256:'abc'}})};
+ render(<VoiceConversation api={api} context={{}}/>);let result;await act(async()=>{result=JSON.parse(await sdk.tools.generate_manuscript_pdf({document_id:'doc_saved'}))});expect(result.saved).toBe(true);expect(api.generateDocumentPDF).toHaveBeenCalledWith('doc_saved',expect.any(Function),expect.any(AbortSignal));expect(screen.getByRole('button',{name:'Download PDF'})).toBeTruthy();
+});

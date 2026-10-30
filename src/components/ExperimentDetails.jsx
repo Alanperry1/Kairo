@@ -5,6 +5,7 @@ import { domainLabels, isBusy, labels, shortID, timeAgo } from '../templates';
 import { saveDownload } from '../api';
 import ResultChart from './ResultChart';
 import VoiceAgent from './VoiceAgent';
+import LiveTask, { useLiveTask } from './LiveTask';
 import { DocumentActions } from './ResearchDocuments';
 import { experimentVoiceContext } from '../voice-context';
 
@@ -12,7 +13,8 @@ export function Status({ status }) {
   return <span className={`status ${status?.replaceAll('_', '-')}`}>{isBusy(status) ? <LoaderCircle className="spinning" size={12}/> : status === 'completed' ? <Check size={12}/> : <span className="status-dot"/>}{labels[status] || status}</span>;
 }
 
-export default function ExperimentDetails({ api, id, revision, settings, datasets, onChanged, onClose, notify, onNewQuestion, onAskKairo, onDocumentCreated }) {
+export default function ExperimentDetails({ api, id, externalPlanTask, revision, settings, datasets, onChanged, onClose, notify, onNewQuestion, onAskKairo, onDocumentCreated }) {
+  const live=useLiveTask();
   const detail = useExperiment(api, id, revision);
   const [pending, setPending] = useState('');
   const [actionError, setActionError] = useState('');
@@ -28,6 +30,8 @@ export default function ExperimentDetails({ api, id, revision, settings, dataset
       if (experiment.status === 'completed') setTab('Results');
     }
   }, [experiment]);
+  useEffect(()=>{if(experiment?.status==='planned')live.finish();else if(experiment?.status==='needs_review')live.fail();},[experiment?.status,live.finish,live.fail]);
+  async function generatePlan(){live.start();try{const result=await (api.generatePlanStream?api.generatePlanStream(id,live.event):api.generatePlan(id));live.finish();return result;}catch(error){live.fail();throw error;}}
   async function perform(label, fn) {
     setPending(label); setActionError('');
     try { await fn(); detail.refresh(); onChanged(); }
@@ -52,6 +56,8 @@ export default function ExperimentDetails({ api, id, revision, settings, dataset
     <div className="experiment-dialog-heading"><span className="eyebrow">{shortID(id)}{plan && ` · ${domainLabels[plan.domain] || plan.domain}`}</span><h3>{experiment.title}</h3><div><Status status={experiment.status}/><span className="detail-caption">Updated {timeAgo(experiment.updated_at)}</span></div></div>
     {(detail.error || actionError || experiment.error) && <div className="inline-error" role="alert">{actionError || experiment.error || detail.error}</div>}
     {busy && <div className="run-progress"><div><span>{experiment.status === 'planning' ? 'The model is designing your experiment…' : experiment.status === 'queued' ? 'Waiting for a scientific worker…' : 'Running and analyzing the experiment…'}</span><strong>{experiment.progress}%</strong></div><div className="progress"><i style={{ width: `${experiment.progress}%` }}/></div></div>}
+    {busy && detail.events.length>0 && <ol className="execution-timeline" aria-label="Live execution stages">{detail.events.filter(event=>['queued','running','input_validation','executing','analyzing','packaging','warning'].includes(event.kind)).slice(-6).map(event=><li key={event.id}><span className="live-task-dot"/>{event.message}</li>)}</ol>}
+    <LiveTask task={live.task || externalPlanTask} kind="plan"/>
     <VoiceAgent showWakeActivation={false} api={api} available={settings?.voice_enabled} context={experimentVoiceContext(experiment)} onQuestion={onNewQuestion} onDocumentCreated={onDocumentCreated}/>
     {onAskKairo && <button type="button" className="chat-form-link" onClick={()=>onAskKairo('',experiment)}>Discuss this experiment with Kairo<ArrowDownToLine size={13}/></button>}
     <div className="detail-tabs" role="group" aria-label="Experiment sections">{['Plan', 'Results', 'Activity', 'Artifacts'].map((name) => <button className={tab === name ? 'selected' : ''} key={name} onClick={() => setTab(name)}>{name}{name === 'Artifacts' && detail.artifacts.length > 0 && <span>{detail.artifacts.length}</span>}</button>)}</div>
@@ -67,7 +73,7 @@ export default function ExperimentDetails({ api, id, revision, settings, dataset
       </>}
       {!plan && !editing && <div className="inline-notice">No plan yet. {settings?.model_provider === 'disabled' ? 'Connect an AI model to design a custom experiment, or paste a manual plan below.' : 'Generate a plan with the configured model, or supply a manual plan.'}</div>}
       {canPlan && !editing && <div className="plan-controls">
-        {settings?.model_provider !== 'disabled' && <button className="button secondary" disabled={!!pending || !settings} onClick={() => perform('Generating plan', () => api.generatePlan(id))}><RefreshCw size={13}/>{pending === 'Generating plan' ? 'Generating…' : plan ? 'Regenerate AI plan' : 'Generate AI plan'}</button>}
+        {settings?.model_provider !== 'disabled' && <button className="button secondary" disabled={!!pending || !settings} onClick={() => perform('Generating plan', generatePlan)}><RefreshCw size={13}/>{pending === 'Generating plan' ? 'Generating…' : plan ? 'Regenerate AI plan' : 'Generate AI plan'}</button>}
         <button className="button secondary" disabled={!!pending} onClick={() => { setPlanText(plan ? JSON.stringify(plan, null, 2) : ''); setEditing(true); }}>{plan ? 'Edit plan' : 'Paste a plan'}</button>
       </div>}
       {editing && <form className="plan-editor" onSubmit={(event) => {

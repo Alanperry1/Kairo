@@ -3,10 +3,7 @@ package research
 import (
 	"archive/zip"
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,11 +42,13 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/v1/experiments", s.listExperiments)
 	mux.HandleFunc("POST /api/v1/assistant/chat", s.assistantChat)
+	mux.HandleFunc("POST /api/v1/assistant/chat/stream", withTaskStream(s.assistantChat))
 	mux.HandleFunc("POST /api/v1/experiments", s.createExperiment)
 	mux.HandleFunc("GET /api/v1/experiments/{id}", s.getExperiment)
 	mux.HandleFunc("PATCH /api/v1/experiments/{id}", s.updateExperiment)
 	mux.HandleFunc("DELETE /api/v1/experiments/{id}", s.deleteExperiment)
 	mux.HandleFunc("POST /api/v1/experiments/{id}/plan", s.planExperiment)
+	mux.HandleFunc("POST /api/v1/experiments/{id}/plan/stream", withTaskStream(s.planExperiment))
 	mux.HandleFunc("PUT /api/v1/experiments/{id}/plan", s.putPlan)
 	mux.HandleFunc("GET /api/v1/experiments/{id}/plans", s.planHistory)
 	mux.HandleFunc("POST /api/v1/experiments/{id}/run", s.runExperiment)
@@ -70,13 +69,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/projects", s.createProject)
 	mux.HandleFunc("GET /api/v1/datasets", s.datasets)
 	mux.HandleFunc("POST /api/v1/datasets", s.uploadDataset)
+	mux.HandleFunc("GET /api/v1/datasets/search", s.searchDatasets)
+	mux.HandleFunc("POST /api/v1/datasets/import", s.importDataset)
 	mux.HandleFunc("GET /api/v1/datasets/{id}", s.getDataset)
 	mux.HandleFunc("GET /api/v1/datasets/{id}/download", s.downloadDataset)
 	mux.HandleFunc("GET /api/v1/reports", s.reports)
 	mux.HandleFunc("POST /api/v1/experiments/{id}/documents", s.generateDocument)
+	mux.HandleFunc("POST /api/v1/experiments/{id}/documents/stream", withTaskStream(s.generateDocument))
 	mux.HandleFunc("GET /api/v1/documents", s.listDocuments)
 	mux.HandleFunc("GET /api/v1/documents/{documentID}", s.getDocument)
 	mux.HandleFunc("GET /api/v1/documents/{documentID}/download", s.downloadDocument)
+	mux.HandleFunc("POST /api/v1/documents/{documentID}/pdf", s.generateManuscriptPDF)
+	mux.HandleFunc("POST /api/v1/documents/{documentID}/pdf/stream", withTaskStream(s.generateManuscriptPDF))
+	mux.HandleFunc("GET /api/v1/documents/{documentID}/pdf", s.downloadManuscriptPDF)
 	mux.HandleFunc("GET /api/v1/documents/{documentID}/bundle", s.documentBundle)
 	mux.HandleFunc("GET /api/v1/documents/{documentID}/figures/{name...}", s.documentFigure)
 	mux.HandleFunc("GET /api/v1/dashboard", s.dashboard)
@@ -381,6 +386,7 @@ func (s *Server) planExperiment(w http.ResponseWriter, r *http.Request) {
 		}
 		dataset = &d
 	}
+	taskStatus(r.Context(), "Reading the research question, dataset, and worker capabilities")
 	p, err := s.Model.Plan(r.Context(), e, s.Registry, dataset)
 	if err != nil {
 		_, saveErr := s.Store.Mutate(e.ID, "planning_failed", "AI plan unavailable or invalid", func(e *Experiment) error {
@@ -402,6 +408,7 @@ func (s *Server) planExperiment(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "planning_failed", err.Error())
 		return
 	}
+	taskStatus(r.Context(), "Validating and saving the reviewed plan")
 	e, err = s.Store.Mutate(e.ID, "planned", "Validated research plan saved; explicit run required", func(e *Experiment) error {
 		if e.Status != "planning" || !e.UpdatedAt.Equal(planningStarted) {
 			return ErrConflict
@@ -775,6 +782,7 @@ func (s *Server) getDataset(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, d)
 }
 func (s *Server) downloadDataset(w http.ResponseWriter, r *http.Request) {
+	longDatasetRequest(w, r)
 	d, err := s.Store.Dataset(r.PathValue("id"))
 	if err != nil {
 		handleError(w, err)
@@ -783,107 +791,6 @@ func (s *Server) downloadDataset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": d.Name}))
 	s.serveObject(w, r, "datasets/"+d.ID+".csv")
-}
-func (s *Server) uploadDataset(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 11<<20)
-	reader, err := r.MultipartReader()
-	if err != nil {
-		apiError(w, 400, "invalid_upload", "Use multipart/form-data with one CSV file field named file")
-		return
-	}
-	var raw []byte
-	name := ""
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			apiError(w, 400, "invalid_upload", err.Error())
-			return
-		}
-		if part.FormName() != "file" || name != "" {
-			part.Close()
-			apiError(w, 400, "invalid_upload", "Exactly one file field is required")
-			return
-		}
-		name = filepath.Base(strings.ReplaceAll(part.FileName(), "\\", "/"))
-		if len(name) > 180 || strings.ToLower(filepath.Ext(name)) != ".csv" {
-			part.Close()
-			apiError(w, 422, "invalid_dataset", "File must have a .csv extension (name max 180 characters)")
-			return
-		}
-		raw, err = io.ReadAll(io.LimitReader(part, 10<<20+1))
-		part.Close()
-		if err != nil || len(raw) > 10<<20 {
-			apiError(w, 413, "dataset_too_large", "CSV must be at most 10 MiB")
-			return
-		}
-	}
-	if name == "" {
-		apiError(w, 400, "missing_file", "A CSV file is required")
-		return
-	}
-	raw = []byte(strings.TrimPrefix(string(raw), "\ufeff"))
-	csvReader := csv.NewReader(strings.NewReader(string(raw)))
-	header, err := csvReader.Read()
-	if err != nil || len(header) < 2 || len(header) > 100 {
-		apiError(w, 422, "invalid_csv", "CSV requires a header with 2–100 columns")
-		return
-	}
-	seen := map[string]bool{}
-	for _, h := range header {
-		if h == "" || strings.TrimSpace(h) != h || len(h) > 100 || seen[h] {
-			apiError(w, 422, "invalid_csv", "Column names must be nonempty, unique, trimmed and at most 100 characters")
-			return
-		}
-		seen[h] = true
-	}
-	preview := [][]string{}
-	rows := 0
-	for {
-		row, err := csvReader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			apiError(w, 422, "invalid_csv", err.Error())
-			return
-		}
-		rows++
-		if rows > 50000 {
-			apiError(w, 422, "dataset_too_large", "CSV must have at most 50000 rows")
-			return
-		}
-		for _, v := range row {
-			if len(v) > 10000 {
-				apiError(w, 422, "invalid_csv", "CSV cells must be at most 10000 characters")
-				return
-			}
-		}
-		if len(preview) < 5 {
-			preview = append(preview, row)
-		}
-	}
-	if rows == 0 {
-		apiError(w, 422, "invalid_csv", "CSV must contain data rows")
-		return
-	}
-	sum := sha256.Sum256(raw)
-	d := Dataset{newID("ds"), name, rows, header, preview, hex.EncodeToString(sum[:]), int64(len(raw)), time.Now().UTC()}
-	key := "datasets/" + d.ID + ".csv"
-	if err = s.objectStorage().Put(r.Context(), key, "text/csv; charset=utf-8", raw); err != nil {
-		handleError(w, err)
-		return
-	}
-	if err = s.Store.SaveDataset(d); err != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = s.objectStorage().Delete(cleanup, key)
-		handleError(w, err)
-		return
-	}
-	respond(w, 201, d)
 }
 func (s *Server) reports(w http.ResponseWriter, r *http.Request) {
 	runs, _, err := s.Store.List("completed", "", "", 1000000, 0)

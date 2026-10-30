@@ -95,7 +95,7 @@ The worker image includes **Python, JavaScript (Node.js), R, Go, and C++**. Choo
 
 Python includes NumPy, SciPy, pandas, Polars, scikit-learn, statsmodels, SymPy, NetworkX, Matplotlib, seaborn, scikit-image, and Biopython. R includes jsonlite, data.table, ggplot2, MASS, Matrix, and the standard statistical libraries. JavaScript and Go include their standard libraries; C++ also includes nlohmann/json. The library list in the experiment form comes from the running worker.
 
-Add Python packages to `backend/requirements-worker.txt`, or install other language libraries in `backend/Dockerfile.worker`; rebuild the image and restart the backend. Additional language names can be entered in the form. To execute them, install the runtime and its libraries in the worker image and add an entry to `backend/internal/research/runtimes.json` (extension, run/version argument arrays, optional build arguments, and installed module names). Arguments use `{source}` and `{binary}` placeholders and run without a shell. Julia, Rust, and Ruby have catalog entries but require their runtimes to be installed. Packages are not installed during experiment execution.
+Add Python packages to `backend/requirements-worker.txt`, or install other language libraries in `backend/Dockerfile.worker`; rebuild the image and restart the backend. Additional language names can be entered in the form. To execute them, install the runtime and its libraries in the worker image and add an entry to `backend/internal/research/runtimes.json` (extension, run/version argument arrays, optional build arguments, and installed module names). Arguments use `{source}` and `{binary}` placeholders and run without a shell. Rust, Ruby, and Julia are excluded from experiment language choices and plan validation. Packages are not installed during experiment execution.
 
 Python plans use `python.experiment` and define `run_experiment(inputs, dataset_rows)`. Other languages use `language.experiment`, set `language` to its catalog ID, read `{inputs, dataset_rows, seed}` JSON on stdin, and print one JSON result using the same metrics/findings/limitations schema. Complete executable source, language/runtime provenance, and replay instructions are saved in the reproduction bundle.
 
@@ -150,6 +150,18 @@ If historical files were already lost, migration first tries to recover represen
 
 After migration succeeds, set `STORAGE_BACKEND=r2` in the same `.env` and start the API with `npm run dev:api`. Fresh deployments with no existing research can set R2 mode immediately after adding credentials. R2 mode fails explicitly for missing credentials or storage errors and never falls back to saving research files on disk. Postgres keeps experiment state and artifact/document metadata. ZIP downloads are assembled from stored objects as a stream without local archive files.
 
+## Datasets up to 5 GB
+
+Each CSV can be up to **5 GB (5,000,000,000 bytes)**. There is no 50,000-row storage limit. Uploads are validated incrementally and sent to R2 with multipart uploads using a bounded 16 MiB part buffer; the API does not spool the file to local disk. Invalid, over-limit, and interrupted uploads abort their multipart upload instead of publishing incomplete datasets. Files retain their exact bytes and SHA-256 (including a UTF-8 BOM, if present); the preview shows five rows. CSV structure limits remain: 2–100 columns, unique trimmed column names, cells up to 10,000 characters, physical lines up to 1 MiB, and records up to 2 MiB.
+
+Use **Datasets** to upload a file or a folder of CSVs, search public catalogs, or paste a direct public HTTPS CSV URL. Public search covers UK and California open-data catalogs and reports unavailable sources explicitly. An import downloads directly from the source into R2 after CSV validation. Kairo can search on your behalf and display verified candidates; click **Import to R2** to store a public source, or **Use dataset** to select an existing workspace file. Source URLs are recorded for imported files. Private/gated sources and non-CSV archives are not supported by the public importer.
+
+Choose an existing dataset in the experiment form or Kairo conversation. Naming a file in the workspace lets the agent identify it without uploading it again. Selecting a browser folder uploads its CSV files; the server does not browse arbitrary folders on your computer.
+
+Storage capacity is separate from worker memory. Datasets over 20 MiB or 100,000 rows require a Python custom plan with `parameters.dataset_mode="stream"`. The method receives a single-pass `dataset_rows` iterator and should use incremental aggregates or bounded batches. The API streams every row from R2 and checks the source hash; it never silently samples the file. Other languages and fixed example adapters currently accept only smaller inline datasets. Large analyses still have the configured per-plan timeout and container memory limits. Streaming reproduction bundles include `prepare-stream.py` and the dataset ID/hash; download the original CSV alongside the bundle before replaying.
+
+Uploads/imports permit up to six hours at the API. If you deploy behind another reverse proxy, its body-size and timeout limits must also allow the chosen file size. Interrupted transfers must be restarted; resumable browser uploads are not implemented.
+
 ## Enable AI planning
 
 Install and serve your chosen open-weight model using Ollama or a compatible model server. Then edit the existing root `.env`.
@@ -163,7 +175,7 @@ MODEL_NAME=gemma-4-26b-a4b-it
 MODEL_API_KEY=your_google_ai_studio_key
 ```
 
-The Go backend calls Google's native `generateContent` API, requests JSON for research plans, and reads only final response text. Gemma 4 thinking is set to minimal. Credentials remain in the root `.env`; the browser does not call the model API directly. This model connection is independent of the ElevenLabs voice agent.
+The Go backend calls Google's native API (`streamGenerateContent` for live tasks), requests JSON for research plans, and reads the model's output text. Gemma 4 thinking is set to minimal. Credentials remain in the root `.env`; the browser does not call the model API directly. This model connection is independent of the ElevenLabs voice agent.
 
 For local Ollama:
 
@@ -186,6 +198,20 @@ Use the exact model name served by your endpoint. The compatible endpoint must s
 
 Restart the backend after changing these values.
 
+## Workspace knowledge
+
+Ask Kairo about saved experiments, current or historical methods/code, computed results, errors and activity, projects, datasets, reports, manuscripts, and registered text artifacts. Chat searches Postgres records, reads relevant evidence on demand, and displays **Sources consulted** buttons that open the source study or document. Workspace totals and status counts are supplied directly from the database. Follow-up searches can page beyond the initial catalog. New saved records are available immediately; no reindex command is needed.
+
+Document bodies are retrieved from R2 after locating their title or linked experiment; full-text search inside every R2 document is not indexed. Chat uses bounded, explicitly marked excerpts. Dataset context includes metadata and five preview rows; analyzing all rows still requires an experiment. Registered text artifacts up to 1 MiB can be read after verifying their stored hash. Workspace retrieval does not read `.env`, credentials, arbitrary filesystem paths, or unregistered files. Relevant retrieved research text is sent to the configured model provider; voice lookup answers are also shared with ElevenLabs during a conversation. Research files remain in the configured object storage.
+
+The ElevenLabs client tool `ask_workspace` uses the same streaming knowledge service. After changing the voice tool configuration, run `node --env-file=.env scripts/setup-voice-agent.mjs --update` and start a new voice conversation.
+
+## Live agent activity
+
+Chat, AI planning, and report/manuscript generation show live stages and a growing preview while the model writes. Experiment details also receive saved execution events for input checks, computation, analysis, and artifact upload. Two-second polling remains available if the execution event stream disconnects.
+
+Previews are provisional output, not saved results or the model's private reasoning. A task reports completion only after the final response passes validation and any required object uploads and database writes succeed. Partial model output stays in browser/server memory; final research files use the configured object storage. Closing a chat or document panel cancels its request. If a stream disconnects, check the experiment or document list before retrying because saving may already have finished. Deploy reverse proxies with SSE buffering disabled.
+
 ## Create an experiment
 
 1. Open the workspace and choose **New experiment → Custom experiment**.
@@ -201,9 +227,9 @@ A separate biology study is provided in [custom-plan.json](backend/examples/cust
 
 ## Research voice companion
 
-Select **Talk to Kairo** on the Experiments page, in a new-experiment form, or in an experiment’s detail panel. Select **Start conversation** and allow microphone access. The panel shows the conversation transcript, listening/speaking state, mute and end controls, and a typed-message option. Closing the panel or leaving its view ends the session.
+Select the **microphone** on the Experiments page, in a new-experiment form, or in an experiment’s detail panel. Select **Start conversation** and allow microphone access. The panel shows the conversation transcript, listening/speaking state, mute and end controls, and a typed-message option. Closing the panel or leaving its view ends the session.
 
-For voice activation, enable the **Hey Kairo** switch once during your workspace visit. Say **“Hey Kairo”** (also accepts **“Hey Kario”**) to open the panel and start the ElevenLabs greeting without another click. The opt-in follows you between experiment views and resets when you reload the page. Wake listening pauses while the voice panel is open or the tab is hidden and resumes when you close the panel or return to the tab. Switch it off to release the microphone. Your browser may send wake-listening audio to its speech-recognition service; this is separate from ElevenLabs conversation audio. Browser speech recognition has limited availability, so manual **Talk to Kairo** remains available when it is unsupported.
+For voice activation, open **Settings → Hey Kairo** and enable the switch. Say **“Hey Kairo”** (also accepts **“Hey Kario”**) to open the panel and start the ElevenLabs greeting without another click. The setting is remembered on this browser and follows you across workspace pages. Close Settings and allow microphone access to start listening. Wake listening pauses while the voice panel is open or the tab is hidden and resumes when you close the panel or return to the tab. Switch it off to release the microphone. Your browser may send wake-listening audio to its speech-recognition service; this is separate from ElevenLabs conversation audio. Browser speech recognition has limited availability, so the **microphone button** remains available when it is unsupported.
 
 The agent can read the current question, saved method, status, and bounded findings/metrics. Uploaded dataset rows, API tokens, and database credentials are not included. Audio and the selected experiment context are sent to ElevenLabs only when you start a conversation. The conversation history shown in the panel is kept in memory; ElevenLabs may retain conversation data under your account settings.
 
@@ -327,3 +353,15 @@ python3 figures.py --export < figure-data.json
 ```
 
 This re-plots the saved values without rerunning the experiment. PNG/PDF assets are checked against their saved SHA-256 before serving or packaging.
+
+### Manuscript LaTeX format
+
+New manuscript drafts use a 10-point, two-column conference-style article matching the supplied paper layout: 0.75-inch side margins, a full-width title/author/abstract block, keywords, compact numbered headings, a running header, page numbers, and booktabs metric tables. The writing agent supplies Introduction, Background and Related Work, Methodology, Experimental Setup, Results, Discussion, and Conclusion; recorded limitations and reproduction details remain included. Figures use the existing bundle-relative vector PDFs. Tables split into column-sized batches and abbreviate long values; full evidence stays in `evidence.json`.
+
+Author names and affiliations remain editable placeholders. References are left for verified sources rather than copying the example paper's bibliography. Existing saved manuscripts keep their original source; generate a new draft to use this format. Compile the complete source bundle with pdfLaTeX, LuaLaTeX, or XeLaTeX and the standard LaTeX packages listed in `main.tex`.
+
+### Generate a manuscript PDF
+
+Open a saved manuscript and select **Generate & download PDF**. The app compiles its saved `main.tex` and vector figures twice, streams progress, and stores the PDF and a source/output hash manifest with that document in R2. Later downloads reuse the verified PDF; changed sources or a failed integrity check trigger recompilation. A compiled PDF is also included as `main.pdf` in the source bundle when available. Compilation failures leave the LaTeX and research evidence intact.
+
+The ElevenLabs tool `generate_manuscript_pdf` provides the same action by voice. Start a new voice session after updating its configuration. PDF rendering requires Linux with user namespaces, Bubblewrap (`bwrap`), `/usr/bin/pdflatex`, Python 3, and `prlimit` (util-linux) on the API host. On Debian/Ubuntu the LaTeX dependencies are provided by `texlive-latex-extra`, `texlive-fonts-recommended`, and `lmodern`. No new `.env` variables are required. The compiler has no network or project/credential filesystem access; its bounded temporary files live in memory and disappear when the process exits. Only the finished PDF and its manifest persist in object storage.

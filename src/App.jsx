@@ -7,10 +7,12 @@ import Dialog from './components/Dialog';
 import ExperimentDetails, { Status } from './components/ExperimentDetails';
 import ResearchForm from './components/ResearchForm';
 import ResearchChat from './components/ResearchChat';
+import { useLiveTask } from './components/LiveTask';
+import DatasetLibrary, { datasetSize } from './components/DatasetLibrary';
 import VoiceAgent from './components/VoiceAgent';
 import ResearchDocuments, { DocumentViewer } from './components/ResearchDocuments';
 import { OverviewPage, ProjectsPage, ActivityPage } from './components/WorkspacePages';
-import { VoiceActivationProvider } from './voice-activation';
+import { VoiceActivationProvider, useVoiceActivation } from './voice-activation';
 
 const nav = [['Kairo', MessageCircle], ['Overview', LayoutDashboard], ['Experiments', FlaskConical], ['Projects', Folder], ['Datasets', Database], ['Reports', FileText], ['Manuscripts', BookOpen], ['Activity', Activity]];
 const domains = { physics: { Icon: Atom, color: 'purple' }, statistics: { Icon: ChartNoAxesCombined, color: 'green' }, computer_science: { Icon: Code2, color: 'blue' } };
@@ -32,17 +34,22 @@ function WorkspaceSearch({ api, onOpen, onClose }) {
 }
 
 function ConnectionSettings({ api, settings, unauthorized, hasToken, onSaveToken, tools }) {
+  const {enabled,setEnabled}=useVoiceActivation();
+  const wakeSupported=!!(window.SpeechRecognition||window.webkitSpeechRecognition)&&window.isSecureContext!==false;
   const [token, setToken] = useState('');
   const capabilities = tools.filter((tool) => tool.category === 'capability' || tool.id === 'python.experiment');
   return <>
     <div className="engine-setting"><span className="domain-icon"><Atom size={18}/></span><div><strong>{settings?.model_provider === 'disabled' ? 'General research workspace' : settings?.model_name || 'Research engine'}</strong><p>{settings?.model_provider === 'disabled' ? 'Your questions, methods, and computational experiments.' : 'Your model is configured in the root .env file.'}</p></div></div>
     <details className="code-disclosure"><summary>Scientific tools</summary><div className="tools-list">{capabilities.map((tool) => <div key={tool.id}><span><strong>{tool.name}</strong><small>{tool.dependencies.join(' · ')}</small></span><span className={tool.available ? 'available' : 'unavailable'} title={tool.unavailable_reason}>{tool.available ? 'Available' : 'Unavailable'}</span></div>)}{!capabilities.length && <p className="form-help">Restart the updated backend to load the general execution capability.</p>}</div></details>
-    <div className="voice-settings"><strong>ElevenLabs voice agent</strong><span>{settings?.voice_enabled ? 'Configured · available in experiments' : 'Not configured · add ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID to the root .env, then restart the backend.'}</span></div>
+    <div className="voice-settings"><strong>ElevenLabs voice agent</strong><span>{!settings ? 'Checking voice connection…' : settings.voice_enabled ? 'Configured · available in the workspace' : 'Not configured · add ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID to the root .env, then restart the backend.'}</span></div>
+    <div className="wake-settings"><div><strong>Hey Kairo</strong><p>Say “Hey Kairo” to open the voice agent.</p></div><button type="button" role="switch" aria-label="Enable Hey Kairo" aria-checked={enabled} disabled={!enabled&&(!wakeSupported||!settings?.voice_enabled)} onClick={()=>setEnabled(value=>!value)}><span className="voice-wake-switch" aria-hidden="true"/>{enabled?'Enabled':'Disabled'}</button><p>{!settings?'Checking voice connection…':!wakeSupported?'Wake phrases need a browser with speech recognition on HTTPS or localhost. You can still use the microphone button.':!settings?.voice_enabled?'Connect ElevenLabs to enable voice activation.':enabled?'Close Settings, allow microphone access, then say “Hey Kairo”. Your choice is remembered on this browser.':'Enable to listen for your wake phrase while this workspace tab is open.'}</p><small>Listening pauses during a voice conversation or when this tab is hidden. Your browser may use its online speech recognition service.</small></div>
     <details className="code-disclosure" open={unauthorized || undefined}><summary>Connection & access</summary><div className="settings-grid"><span>API</span><code>{api.baseURL}</code><span>Workers</span><strong>{settings?.workers ?? '—'}</strong><span>Execution</span><strong>{settings?.worker_mode || 'Unavailable'}</strong><span>Artifacts</span><strong>{settings?.storage_backend === 'r2' ? 'Cloudflare R2' : 'Local storage'}</strong></div>{unauthorized && <div className="inline-error">Restart the frontend and backend so both read the same API_TOKEN from .env.</div>}<form onSubmit={(event) => { event.preventDefault(); onSaveToken(token.trim()); setToken(''); }}><label className="field-label" htmlFor="api-token">Backend API token</label><input id="api-token" type="password" className="form-input" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder={hasToken ? 'Token saved for this tab' : 'Optional for local use'}/><p className="form-help">The local Vite proxy reads API_TOKEN from .env automatically. This field is only needed for a direct API connection.</p><div className="modal-actions">{hasToken && <button className="button secondary" type="button" onClick={() => onSaveToken('')}>Clear token</button>}<button className="button primary" disabled={!token.trim()} type="submit">Save token & reconnect</button></div></form></details>
   </>;
 }
 
 export default function App({ client }) {
+  const planning=useLiveTask();
+  const [planningID,setPlanningID]=useState('');
   const tokenRef = useRef(readSessionToken());
   const api = useMemo(() => client || createAPI({ baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1', getToken: () => tokenRef.current }), [client]);
   const [page, setPage] = useState('Experiments');
@@ -92,7 +99,7 @@ export default function App({ client }) {
   const openExperiment = (id) => { setSearchOpen(false); setModal({ type: 'experiment', id }); };
   const openDocument = (document) => { refresh(); setModal({ type: 'document', document }); };
   const openProject = (project) => { changePage('Experiments'); setProjectID(project.id); };
-  const openNew = (initialQuestion = '', initialLanguage = 'auto') => { setActionError(''); setModal({ type: 'new', initialQuestion, initialLanguage }); };
+  const openNew = (initialQuestion = '', initialLanguage = 'auto', initialDatasetID = '') => { setActionError(''); setModal({ type: 'new', initialQuestion, initialLanguage, initialDatasetID }); };
   const openAssistant = (initialQuestion = '', experiment = null) => {setModal(null);changePage('Kairo');setAssistant((old)=>({key:old.key+1,initialQuestion,experiment}));};
   const counts = dashboard?.status_counts || {};
   const connectionText = workspace.loading ? 'Connecting…' : workspace.unauthorized ? 'Authentication required' : workspace.connected ? 'API connected' : 'Connection interrupted';
@@ -103,9 +110,9 @@ export default function App({ client }) {
     try {
       created = await api.createExperiment(body);
       setModal({ type: 'experiment', id: created.id }); refresh();
-      if (settings?.model_provider !== 'disabled') await api.generatePlan(created.id);
+      if (settings?.model_provider !== 'disabled') {setPlanningID(created.id);planning.start();if(api.generatePlanStream)await api.generatePlanStream(created.id,planning.event);else await api.generatePlan(created.id);planning.finish();}
       notify(settings?.model_provider !== 'disabled' ? 'Research plan saved. Review it before running.' : 'Research question saved. Add a plan or connect an AI model to continue.');
-    } catch (error) { setActionError(error.message); if (created) notify('Experiment saved. Its plan needs attention.'); }
+    } catch (error) {planning.fail(); setActionError(error.message); if (created) notify('Experiment saved. Its plan needs attention.'); }
     finally { setCreating(false); refresh(); }
   }
   async function upload(event) {
@@ -118,6 +125,7 @@ export default function App({ client }) {
     finally { setUploading(false); input.value = ''; }
   }
   async function downloadDataset(dataset) {
+    if (dataset.size > 20_000_000 && api.baseURL?.startsWith('/') && !hasToken) {const link=document.createElement('a');link.href=`${api.baseURL}/datasets/${encodeURIComponent(dataset.id)}/download`;link.download=dataset.name;link.click();return;}
     setDownloadPending(dataset.id); setActionError('');
     try { saveDownload(await api.downloadDataset(dataset.id), dataset.name); }
     catch (error) { setActionError(error.message); }
@@ -140,8 +148,9 @@ export default function App({ client }) {
         <div className="page-heading"><div><h1>{activeProject && page === 'Experiments' ? activeProject.name : page}</h1><p>{{Kairo:'An idea, a conversation, a direction.', Overview:'Your research at a glance.', Experiments:'A question, a plan, and the evidence.', Projects:'Keep related experiments together.', Reports:'Research reports from recorded evidence.', Manuscripts:'Your research, ready for a first draft.', Datasets:'The data behind your research.', Activity:'The latest from your workspace.'}[page]}</p></div>{(page === 'Experiments' || page === 'Overview') && <button className="button primary" disabled={creating || !workspace.connected} onClick={() => openNew()}><Plus size={15}/>New experiment</button>}{page === 'Projects' && <button className="button primary" onClick={() => setModal({ type: 'project' })}><Plus size={15}/>New project</button>}{page === 'Datasets' && <label className={`button primary upload-label ${uploading || !workspace.connected ? 'disabled' : ''}`}>{uploading ? <LoaderCircle className="spinning" size={14}/> : <Plus size={15}/>} {uploading ? 'Uploading…' : 'Upload CSV'}<input aria-label="Upload CSV dataset" type="file" accept=".csv,text/csv" disabled={uploading || !workspace.connected} onChange={upload}/></label>}</div>
         {workspace.error && <div className="connection-banner" role="alert"><div><strong>{workspace.unauthorized ? 'Sign in to your research API' : 'Unable to refresh the workspace'}</strong><p>{workspace.error}{dashboard && ' Showing previously loaded data.'}</p></div><button className="button secondary" onClick={refresh}>Retry</button><button className="button secondary" onClick={() => setModal({ type: 'settings' })}>Settings</button></div>}
         {actionError && <div className="inline-error global-error" role="alert"><span>{actionError}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setActionError('')}><X size={15}/></button></div>}
-        <div hidden={page !== 'Kairo'}><ResearchChat key={assistant.key} active={page === 'Kairo' && !modal} api={api} settings={settings} experiment={assistant.experiment} initialQuestion={assistant.initialQuestion} onUseDraft={(draft)=>openNew(draft.question,draft.language)} onDocumentCreated={openDocument}/></div>
+        <div hidden={page !== 'Kairo'}><ResearchChat key={assistant.key} active={page === 'Kairo' && !modal} api={api} settings={settings} experiment={assistant.experiment} initialQuestion={assistant.initialQuestion} datasets={datasets} onDatasetsChanged={refresh} onUseDraft={(draft)=>openNew(draft.question,draft.language,draft.dataset_id)} onDocumentCreated={openDocument} onOpenSource={async source=>{try{if(source.kind==='report'||source.kind==='manuscript')openDocument(await api.getDocument(source.id));else if(source.experiment_id)openExperiment(source.experiment_id);else if(source.kind==='dataset'){setPage('Datasets');setModal(null);}else if(source.kind==='project'){setPage('Experiments');setProjectID(source.id);setOffset(0);}}catch(error){setActionError(error.message);}}}/></div>
         {page === 'Overview' && <OverviewPage dashboard={dashboard} projects={projects} datasets={datasets} experiments={runs} onOpenExperiment={openExperiment} onNavigate={changePage} onNew={() => openNew()}/>}
+        {!modal&&!['Kairo','Experiments'].includes(page)&&<VoiceAgent showWakeActivation={false} api={api} available={settings?.voice_enabled} context={{view:page.toLowerCase()}} onQuestion={openNew} onDocumentCreated={openDocument}/>}
         {page === 'Projects' && <ProjectsPage projects={projects} onOpen={openProject} onNew={() => setModal({ type: 'project' })}/>}
         {page === 'Activity' && <ActivityPage api={api} revision={revision} onOpenExperiment={openExperiment}/>}
         {page === 'Experiments' && <>
@@ -155,14 +164,14 @@ export default function App({ client }) {
           </section>
         </>}
         {(page === 'Reports' || page === 'Manuscripts') && <ResearchDocuments key={page} api={api} kind={page === 'Manuscripts' ? 'manuscript' : 'report'} revision={revision} onOpenDocument={openDocument} runReports={reports} onOpenExperiment={openExperiment}/>}
-        {page === 'Datasets' && <section className="resource-list">{datasets.map((dataset) => <div className="resource-row" key={dataset.id}><span className="domain-icon"><Folder size={18}/></span><button className="dataset-name" aria-label={`Preview ${dataset.name}`} onClick={() => setModal({ type: 'dataset', dataset })}><strong>{dataset.name}</strong><small>{dataset.rows} rows · {dataset.columns.length} columns</small></button><button className="icon-button" title="Download CSV" aria-label={`Download ${dataset.name}`} disabled={downloadPending === dataset.id} onClick={() => downloadDataset(dataset)}><ArrowDownToLine size={16}/></button></div>)}{!datasets.length && <div className="empty-state"><span className="empty-icon"><Folder size={24}/></span><h3>No datasets yet</h3><p>Upload a CSV to use it in an experiment.</p><small>Up to 10 MiB · 50,000 rows</small></div>}</section>}
+        {page === 'Datasets' && <><DatasetLibrary api={api} onChanged={refresh}/><section className="resource-list">{datasets.map((dataset) => <div className="resource-row" key={dataset.id}><span className="domain-icon"><Folder size={18}/></span><button className="dataset-name" aria-label={`Preview ${dataset.name}`} onClick={() => setModal({ type: 'dataset', dataset })}><strong>{dataset.name}</strong><small>{dataset.rows.toLocaleString()} rows · {dataset.columns.length} columns · {datasetSize(dataset.size)}</small></button><button className="icon-button" title="Download CSV" aria-label={`Download ${dataset.name}`} disabled={downloadPending === dataset.id} onClick={() => downloadDataset(dataset)}><ArrowDownToLine size={16}/></button></div>)}{!datasets.length && <div className="empty-state"><span className="empty-icon"><Folder size={24}/></span><h3>No datasets yet</h3><p>Upload a CSV to use it in an experiment.</p><small>Up to 5 GB per CSV · stored in R2</small></div>}</section></>}
       </main>
     </div>
     {searchOpen && <WorkspaceSearch api={api} onOpen={openExperiment} onClose={closeSearch}/>}
     {modal && <Dialog key={modal.type === 'experiment' ? modal.id : modal.type === 'document' ? modal.document.id : modal.type} title={modal.type === 'experiment' ? 'Experiment' : { document: modal.document?.kind === 'manuscript' ? 'Research manuscript' : 'Research report', new: 'A new experiment', settings: 'Workspace settings', help: 'A home for your next discovery', project: 'Create a project', projects: 'Your research projects', dataset: modal.dataset?.name }[modal.type]} onClose={closeModal} className={modal.type === 'experiment' ? 'experiment-modal' : modal.type === 'document' ? 'document-modal' : ''}>
       {modal.type === 'document' && <DocumentViewer api={api} initialDocument={modal.document} onOpenExperiment={openExperiment}/>}
-      {modal.type === 'experiment' && <ExperimentDetails api={api} id={modal.id} revision={revision} settings={settings} datasets={datasets} onChanged={refresh} onClose={closeModal} notify={notify} onNewQuestion={openNew} onAskKairo={openAssistant} onDocumentCreated={openDocument}/>}
-      {modal.type === 'new' && <ResearchForm api={api} settings={settings} projects={projects} datasets={datasets} initialQuestion={modal.initialQuestion} initialLanguage={modal.initialLanguage} onAskKairo={openAssistant} onSubmit={createResearch} creating={creating} onDocumentCreated={openDocument}/>}
+      {modal.type === 'experiment' && <ExperimentDetails api={api} id={modal.id} externalPlanTask={planningID === modal.id ? planning.task : null} revision={revision} settings={settings} datasets={datasets} onChanged={refresh} onClose={closeModal} notify={notify} onNewQuestion={openNew} onAskKairo={openAssistant} onDocumentCreated={openDocument}/>}
+      {modal.type === 'new' && <ResearchForm api={api} settings={settings} projects={projects} datasets={datasets} initialQuestion={modal.initialQuestion} initialLanguage={modal.initialLanguage} initialDatasetID={modal.initialDatasetID} onAskKairo={openAssistant} onSubmit={createResearch} creating={creating} onDocumentCreated={openDocument}/>}
       {modal.type === 'settings' && <ConnectionSettings api={api} settings={settings} unauthorized={workspace.unauthorized} hasToken={hasToken} onSaveToken={saveToken} tools={tools}/>}
       {modal.type === 'project' && <ProjectForm api={api} onSaved={() => { refresh(); closeModal(); notify('Project created'); }}/>}
       {modal.type === 'projects' && <><div className="detail-section">{projects.map((project) => <button className="project-list-item" key={project.id} onClick={() => { setPage('Experiments'); setProjectID(project.id); setStatus(''); setQuery(''); setOffset(0); closeModal(); }}><Folder size={16}/>{project.name}</button>)}{!projects.length && <p>No projects yet.</p>}</div><button className="button primary" onClick={() => setModal({ type: 'project' })}><Plus size={14}/>New project</button></>}

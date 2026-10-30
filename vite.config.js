@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
   });
   const proxy = { '/api': route(), '/healthz': route(), '/readyz': route() };
   return {
-    server: { port: 5173, strictPort: true, proxy },
+    server: { port: 5173, strictPort: true, proxy, watch: { ignored: ['**/backend/data/**'] } },
     preview: { proxy },
     test: { environment: 'jsdom', include: ['src/**/*.test.{js,jsx}'], restoreMocks: true },
   };

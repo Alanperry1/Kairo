@@ -47,16 +47,15 @@ export function useWakePhrase({ enabled, paused, onWake, onDisable }) {
     }
     try { recognition = new Recognition(); } catch { fail('start-failed'); return; }
     recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.lang = 'en-US';
     recognition.onstart = () => { if (!disposed && !fired && !stopped) setPhase('listening'); };
     recognition.onresult = (event) => {
       if (disposed || fired || stopped) return;
       for (let index = event.resultIndex || 0; index < event.results.length; index++) {
         const result = event.results[index];
-        if (!result.isFinal) continue;
         const text = `${history} ${result[0]?.transcript || ''}`;
-        history = text.slice(-160);
+        if(result.isFinal) history = text.slice(-160);
         if (!hasWakePhrase(text)) continue;
         fired = true;
         clearTimeout(retry);

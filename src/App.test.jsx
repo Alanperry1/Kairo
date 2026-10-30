@@ -5,7 +5,9 @@ import userEvent from '@testing-library/user-event';
 import App from './App';
 import manualPlan from '../backend/examples/custom-plan.json';
 
-afterEach(() => { cleanup(); sessionStorage.clear(); });
+vi.mock('./components/VoiceConversation',()=>({default:({autoStart})=><div data-testid="settings-wake-session" data-autostart={String(autoStart)}>Voice session</div>}));
+
+afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); vi.unstubAllGlobals(); });
 const now = new Date().toISOString();
 function fakeAPI() {
   let experiments = [];
@@ -133,4 +135,27 @@ describe('connected dashboard', () => {
     fireEvent.change(screen.getByLabelText('Filter by experiment status'), { target: { value: 'failed' } });
     await waitFor(() => expect(api.listExperiments).toHaveBeenCalledWith(expect.objectContaining({ q: 'projectile', status: 'failed' }), expect.any(AbortSignal)));
   });
+});
+
+it('enables Hey Kairo in Settings, remembers it, and opens voice from another workspace page',async()=>{
+ const recognizers=[];
+ class Recognition {constructor(){recognizers.push(this)} start=vi.fn(()=>this.onstart?.());abort=vi.fn();}
+ vi.stubGlobal('SpeechRecognition',Recognition);
+ const api=fakeAPI();api.settings.mockResolvedValue({model_provider:'disabled',voice_enabled:true});
+ const view=render(<App client={api}/>);await screen.findAllByText('API connected');
+ await userEvent.click(screen.getByRole('button',{name:'Overview',exact:true}));
+ expect(recognizers).toHaveLength(0);
+ await userEvent.click(screen.getByRole('button',{name:'Settings',exact:true}));
+ const toggle=screen.getByRole('switch',{name:'Enable Hey Kairo'});expect(toggle.getAttribute('aria-checked')).toBe('false');
+ await userEvent.click(toggle);expect(localStorage.getItem('kairo-wake-enabled')).toBe('true');
+ await userEvent.click(screen.getByRole('button',{name:'Close dialog'}));
+ await waitFor(()=>expect(recognizers.length).toBeGreaterThan(0));
+ const recognition=recognizers.at(-1);
+ fireEvent(document,new Event('visibilitychange'));
+ recognition.onresult({resultIndex:0,results:[{0:{transcript:'Hey Kairo'},isFinal:true,length:1}]});
+ const session=await screen.findByTestId('settings-wake-session');expect(session.getAttribute('data-autostart')).toBe('true');
+ view.unmount();render(<App client={api}/>);await screen.findAllByText('API connected');
+ await userEvent.click(screen.getByRole('button',{name:'Settings',exact:true}));
+ expect(screen.getByRole('switch',{name:'Enable Hey Kairo'}).getAttribute('aria-checked')).toBe('true');
+ await userEvent.click(screen.getByRole('switch',{name:'Enable Hey Kairo'}));expect(localStorage.getItem('kairo-wake-enabled')).toBe('false');
 });

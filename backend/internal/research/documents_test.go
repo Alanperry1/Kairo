@@ -114,7 +114,7 @@ func TestWritingAgentUsesEvidenceAndRejectsIncompleteDraft(t *testing.T) {
 		}
 		content := `{"title":"Missing sections"}`
 		if calls == 0 {
-			content = `{"title":"Growth study","abstract":"Recorded model findings.","introduction":"A computational question.","methods":"An exact equation.","results":"The recorded final population is 99.4.","discussion":"Limited to the recorded simulation.","conclusion":"Review before extrapolating."}`
+			content = `{"background":"Recorded model context.","experimental_setup":"Recorded input parameters only.","keywords":["population dynamics","simulation"],"title":"Growth study","abstract":"Recorded model findings.","introduction":"A computational question.","methods":"An exact equation.","results":"The recorded final population is 99.4.","discussion":"Limited to the recorded simulation.","conclusion":"Review before extrapolating."}`
 		}
 		calls++
 		respond(w, 200, map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}, "finish_reason": "stop"}}})
@@ -124,6 +124,12 @@ func TestWritingAgentUsesEvidenceAndRejectsIncompleteDraft(t *testing.T) {
 	draft, source, err := m.DraftResearchDocument(context.Background(), e, "manuscript")
 	if err != nil || source != "model" || !strings.Contains(draft.Results, "99.4") {
 		t.Fatalf("writing failed: %v", err)
+	}
+	rendered := renderResearchDocument(e, draft, "manuscript")
+	for _, part := range []string{"Recorded model context.", "Recorded input parameters only.", "population dynamics, simulation"} {
+		if !strings.Contains(rendered, part) {
+			t.Fatal("manuscript section lost", part)
+		}
 	}
 	if _, _, err = m.DraftResearchDocument(context.Background(), e, "report"); err == nil {
 		t.Fatal("partial model draft silently used fallback sections")
@@ -139,6 +145,14 @@ func TestLatexExportEscapesTextAndCompiles(t *testing.T) {
 	source := renderResearchDocument(e, draft, "manuscript")
 	if strings.Contains(source, `\input{/etc/passwd}`) || !strings.Contains(source, `\&`) || !strings.Contains(source, `\%`) || !strings.Contains(source, `\_`) {
 		t.Fatal("unescaped text could become executable LaTeX")
+	}
+	for _, marker := range []string{`\documentclass[10pt,twocolumn]{article}`, `\setlength{\columnsep}{0.25in}`, `\twocolumn[{`, `\section{Background and Related Work}`, `\section{Methodology}`, `\section{Experimental Setup}`, `\usepackage{booktabs}`} {
+		if !strings.Contains(source, marker) {
+			t.Fatal("conference template missing", marker)
+		}
+	}
+	if strings.Contains(source, `\begin{longtable}`) {
+		t.Fatal("longtable cannot be used in two-column mode")
 	}
 	engine, err := exec.LookPath("pdflatex")
 	if err != nil {

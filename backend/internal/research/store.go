@@ -420,3 +420,8 @@ func (s *Store) PlanHistory(id string) ([]map[string]any, error) {
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) DeleteDataset(id string) error {
+	_, err := s.db.Exec("DELETE FROM datasets WHERE id=$1", id)
+	return err
+}

@@ -331,7 +331,12 @@ def language_experiment(plan, rows):
 
 
 def main():
-    request = json.load(sys.stdin)
+    first = sys.stdin.readline()
+    if first.rstrip() == 'KAIRO_DATASET_STREAM':
+        request = json.loads(sys.stdin.readline())
+        request['dataset_rows'] = (json.loads(line) for line in sys.stdin if line.strip())
+    else:
+        request = json.loads(first + sys.stdin.read())
     plan, rows = request['plan'], request.get('dataset_rows', [])
     adapter, p = plan['adapter'], plan['parameters']
     if adapter == 'python.experiment':
@@ -348,6 +353,9 @@ def main():
         raise ValueError('Unknown registered adapter')
     result.setdefault('language', 'python')
     result.setdefault('runtime_version', platform.python_version())
+    if request.get('dataset_stream'):
+        for _ in rows:
+            pass  # Drain and verify the complete source, even if the method stopped early.
     result['python_version'] = platform.python_version()
     result.setdefault('dependencies', {})
     result['dependencies']['python'] = platform.python_version()

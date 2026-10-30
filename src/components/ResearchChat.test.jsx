@@ -37,3 +37,23 @@ it('aborts a pending reply on reset and ignores its eventual result',async()=>{
 it('bounds the model context while preserving the newest answer',()=>{
  const turns=Array.from({length:40},(_,id)=>({id,role:id%2?'user':'assistant',content:'x'.repeat(2000)}));const history=conversationHistory(turns);expect(history.length).toBeLessThanOrEqual(24);expect(history.reduce((n,m)=>n+m.content.length,0)).toBeLessThanOrEqual(24000);expect(history.at(-1).role).toBe('user');
 });
+
+it('uses an existing dataset in the agent request and experiment draft',async()=>{
+ const draft={question:'How does the recorded temperature vary over time?',language:'python'};const api={chat:vi.fn().mockResolvedValue({message:'We can analyze the supplied observations.',draft})};const use=vi.fn();
+ render(<ResearchChat api={api} settings={{}} datasets={[{id:'ds_temperature',name:'temperature.csv'}]} onUseDraft={use}/>);
+ await userEvent.selectOptions(screen.getByLabelText('Dataset for Kairo'),'ds_temperature');await userEvent.type(screen.getByLabelText('Ask Kairo'),'Use this dataset');await userEvent.click(screen.getByRole('button',{name:'Send to Kairo'}));await userEvent.click(await screen.findByRole('button',{name:'Review experiment'}));expect(api.chat.mock.calls[0][0].dataset_id).toBe('ds_temperature');expect(use).toHaveBeenCalledWith({...draft,dataset_id:'ds_temperature'});
+});
+
+it('shows a live reply before the final validated message arrives',async()=>{
+ let finish;const api={chatStream:vi.fn((body,update)=>{update({event:'status',message:'Reading workspace evidence'});update({event:'model_start'});update({event:'delta',text:'{"message":"Here is the beginning'});return new Promise(resolve=>{finish=resolve});})};
+ render(<ResearchChat api={api} settings={{}}/>);await userEvent.type(screen.getByLabelText('Ask Kairo'),'Explain my method');await userEvent.click(screen.getByRole('button',{name:'Send to Kairo'}));expect(await screen.findByText('Here is the beginning')).toBeTruthy();expect(screen.getByText('Reading workspace evidence')).toBeTruthy();
+ await act(async()=>finish({message:'Here is the complete explanation.'}));expect(await screen.findByText('Here is the complete explanation.')).toBeTruthy();expect(screen.getByText('Task completed')).toBeTruthy();
+});
+
+it('opens trusted workspace sources attached to an answer',async()=>{
+ const source={key:'manuscript:doc_saved',kind:'manuscript',id:'doc_saved',title:'Recorded population study',experiment_id:'exp_growth'};
+ const api={chat:vi.fn().mockResolvedValue({message:'The model assumes a constant carrying capacity.',sources:[source]})};const open=vi.fn();
+ render(<ResearchChat api={api} settings={{}} onOpenSource={open}/>);
+ await userEvent.type(screen.getByLabelText('Ask Kairo'),'What are the assumptions in my paper?');await userEvent.click(screen.getByRole('button',{name:'Send to Kairo'}));
+ const button=await screen.findByRole('button',{name:/Recorded population study/});expect(screen.getByText('Sources consulted')).toBeTruthy();await userEvent.click(button);expect(open).toHaveBeenCalledWith(source);
+});

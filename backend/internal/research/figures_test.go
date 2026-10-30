@@ -100,6 +100,14 @@ func TestMatplotlibFiguresAndLatexCompile(t *testing.T) {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("manuscript with vector figure did not compile: %v\n%s", err, output)
 		}
+		if preview := os.Getenv("KAIRO_FIGURE_PREVIEW_DIR"); preview != "" {
+			raw, err := os.ReadFile(filepath.Join(dir, "main.pdf"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = os.WriteFile(filepath.Join(preview, "manuscript-preview.pdf"), raw, 0600)
+			_ = os.WriteFile(filepath.Join(preview, "main.tex"), []byte(source), 0600)
+		}
 	}
 }
 func TestDocumentFiguresServeExportAndMigrate(t *testing.T) {

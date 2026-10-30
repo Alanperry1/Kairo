@@ -29,6 +29,7 @@ type Registry struct {
 	languages []Language
 }
 type GeneralParams struct {
+	DatasetMode     string         `json:"dataset_mode,omitempty"`
 	Inputs          map[string]any `json:"inputs"`
 	Seed            int64          `json:"seed"`
 	RequiredModules []string       `json:"required_modules"`
@@ -166,6 +167,12 @@ func (r *Registry) Validate(p Plan, requireAvailable bool) error {
 		var c GeneralParams
 		if err := strictJSON(p.Parameters, &c); err != nil {
 			return fmt.Errorf("general experiment parameters: %w", err)
+		}
+		if c.DatasetMode != "" && c.DatasetMode != "inline" && c.DatasetMode != "stream" {
+			return fmt.Errorf("dataset_mode must be inline or stream")
+		}
+		if c.DatasetMode == "stream" && p.Adapter != "python.experiment" {
+			return fmt.Errorf("streaming datasets currently require Python; select Python for a large dataset or provide a smaller file")
 		}
 		if c.Inputs == nil || c.Seed < 0 || c.Seed > 9007199254740991 || len(c.RequiredModules) > 32 {
 			return fmt.Errorf("general parameters require inputs (object), a nonnegative safe-integer seed, and up to 32 required_modules")

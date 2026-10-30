@@ -38,6 +38,13 @@ func (m *memoryObjects) Put(ctx context.Context, key, kind string, raw []byte) e
 	m.files[key] = append([]byte{}, raw...)
 	return nil
 }
+func (m *memoryObjects) PutStream(ctx context.Context, key, kind string, reader io.Reader) error {
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	return m.Put(ctx, key, kind, raw)
+}
 func (m *memoryObjects) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

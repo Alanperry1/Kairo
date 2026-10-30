@@ -84,5 +84,16 @@ export function useExperiment(api, id, revision) {
     load();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [api, id, revision, refreshKey]);
+  const active = ['queued','running','planning'].includes(state.experiment?.status);
+  useEffect(()=>{
+    if(!active || !api.watchExperiment)return;
+    const controller=new AbortController();
+    api.watchExperiment(id, event=>{
+      if(controller.signal.aborted||!event.id)return;
+      setState(previous=>{const all=new Map(previous.events.map(item=>[item.id,item]));all.set(event.id,event);return {...previous,events:[...all.values()].sort((a,b)=>a.id-b.id).slice(-200)};});
+      if(['completed','failed','cancelled','planned','planning_failed'].includes(event.kind))refresh();
+    },controller.signal).catch(error=>{if(!controller.signal.aborted)setState(previous=>({...previous,error:'Live updates disconnected. Refreshing run status periodically.'}));});
+    return ()=>controller.abort();
+  },[api,id,active,refresh]);
   return { ...state, refresh };
 }

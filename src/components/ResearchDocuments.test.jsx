@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ResearchDocuments, { DocumentActions, DocumentViewer } from './ResearchDocuments';
 afterEach(cleanup);
@@ -44,4 +44,20 @@ it('lets a user request a text-only report', async () => {
  render(<DocumentActions api={api} experiment={{id:'exp_done',status:'completed',result:{}}} onGenerated={open}/>);
  await userEvent.click(screen.getByRole('checkbox',{name:'Include figures when useful'}));await userEvent.click(screen.getByRole('button',{name:'Generate report'}));
  expect(api.generateDocument).toHaveBeenCalledWith('exp_done','report',expect.any(AbortSignal),{include_figures:false});
+});
+
+it('streams the manuscript draft before opening a saved document',async()=>{
+ let finish;const open=vi.fn();const api={generateDocumentStream:vi.fn((id,kind,update)=>{update({event:'status',message:'Writing the manuscript draft'});update({event:'delta',text:'{"title":"Growing manuscript","abstract":"Initial evidence'});return new Promise(resolve=>{finish=resolve});})};
+ render(<DocumentActions api={api} experiment={{id:'exp_done',status:'completed',result:{}}} onGenerated={open}/>);await userEvent.click(screen.getByRole('button',{name:'Generate manuscript'}));expect(await screen.findByText(/Initial evidence/)).toBeTruthy();expect(open).not.toHaveBeenCalled();await act(async()=>finish(document));expect(open).toHaveBeenCalledWith(document);
+});
+
+it('streams PDF compilation then downloads the saved PDF',async()=>{
+ const create=vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:pdf');const click=vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(()=>{});
+ const api={generateDocumentPDF:vi.fn(async(id,update)=>{update({event:'status',message:'Compiling the saved LaTeX and figures into PDF'});return {sha256:'abc'}}),downloadDocumentPDF:vi.fn().mockResolvedValue({blob:new Blob(['%PDF-1.7'],{type:'application/pdf'})})};
+ render(<DocumentViewer api={api} initialDocument={document} onOpenExperiment={vi.fn()}/>);await userEvent.click(screen.getByRole('button',{name:'Generate & download PDF'}));
+ expect(api.generateDocumentPDF).toHaveBeenCalledWith('doc_saved',expect.any(Function),expect.any(AbortSignal));expect(api.downloadDocumentPDF).toHaveBeenCalledWith('doc_saved');expect(await screen.findByText('Task completed')).toBeTruthy();expect(click).toHaveBeenCalledOnce();create.mockRestore();click.mockRestore();
+});
+it('preserves the source when PDF compilation fails',async()=>{
+ const api={generateDocumentPDF:vi.fn().mockRejectedValue(new Error('LaTeX compilation failed')),downloadDocumentPDF:vi.fn()};render(<DocumentViewer api={api} initialDocument={document} onOpenExperiment={vi.fn()}/>);
+ await userEvent.click(screen.getByRole('button',{name:'Generate & download PDF'}));expect((await screen.findByRole('alert')).textContent).toContain('LaTeX compilation failed');expect(api.downloadDocumentPDF).not.toHaveBeenCalled();expect(screen.getByLabelText('LaTeX manuscript source')).toBeTruthy();
 });

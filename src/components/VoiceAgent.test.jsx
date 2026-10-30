@@ -18,7 +18,7 @@ class Recognition {
   }
 }
 beforeEach(() => {
-  instances = []; visibility = 'visible';
+  localStorage.clear(); instances = []; visibility = 'visible';
   vi.stubGlobal('SpeechRecognition', Recognition);
   vi.stubGlobal('webkitSpeechRecognition', undefined);
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
@@ -47,8 +47,6 @@ describe('Hey Kairo activation', () => {
     act(() => recognition.result('ordinary speech'));
     expect(screen.queryByTestId('voice-session')).toBeNull();
     act(() => recognition.result('Hey Kairo', false));
-    expect(screen.queryByTestId('voice-session')).toBeNull();
-    act(() => recognition.result('Hey Kario'));
     expect((await screen.findByTestId('voice-session')).getAttribute('data-autostart')).toBe('true');
     expect(recognition.abort).toHaveBeenCalled();
     expect(instances).toHaveLength(1);

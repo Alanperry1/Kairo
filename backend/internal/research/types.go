@@ -86,6 +86,7 @@ type Project struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 type Dataset struct {
+	SourceURL string     `json:"source_url,omitempty"`
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
 	Rows      int        `json:"rows"`
